@@ -1,0 +1,62 @@
+name: Tests and unsigned DMG previews
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: DMG (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: build-requirements.txt
+      - name: Validate sources and shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in build.sh setup.command install-helper.sh uninstall-helper.sh \
+            Helper/helper.sh Packaging/create-dmg.sh 'Packaging/Install VPN Support.command'; do
+            bash -n "$f"
+          done
+          python3 -m compileall -q Scripts
+          python3 -m unittest discover -s tests -v
+          test "$(uname -m)" = '${{ matrix.arch }}'
+      - name: Install gof5 build-time dependency
+        run: brew install gof5
+      - name: Build app without overwriting user installations
+        run: INSTALL_APP=0 ./build.sh
+      - name: Check app bundle and unsigned signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='build/ULiege VPN.app'
+          test -x "$APP/Contents/Resources/AuthRuntime/uliege-auth"
+          test -x "$APP/Contents/Resources/VPNRuntime/gof5"
+          test -x "$APP/Contents/Resources/Support/install-helper.sh"
+          codesign --verify --deep "$APP"
+          # Warning: an ad-hoc signature does NOT confer developer identity.
+      - name: Build unsigned preview DMG
+        run: ./Packaging/create-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-preview-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
