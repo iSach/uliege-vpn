@@ -1,0 +1,4 @@
+# Build-time only. The packaged app needs none of these installed by users.
+pyinstaller>=6.14,<7
+playwright>=1.55,<2
+keyring>=25.6,<27
