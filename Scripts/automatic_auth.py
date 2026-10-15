@@ -22,10 +22,8 @@ import struct
 import getpass
 import os
 import re
-import signal
 import subprocess
 import sys
-import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -120,7 +118,13 @@ USER = getpass.getuser()
 
 
 def host(url):
-    return urlsplit(url).hostname or ""
+    parsed = urlsplit(url)
+    return (parsed.hostname or "").lower() if parsed.scheme == "https" else ""
+
+
+def microsoft_host(url):
+    hostname = host(url)
+    return hostname == "microsoftonline.com" or hostname.endswith(".microsoftonline.com")
 
 
 def keychain_password(service):
@@ -178,7 +182,7 @@ def click_label(frame, label):
     A disappearing node during navigation is normal and retried by the caller.
     """
     regex = re.compile(
-        re.escape(label).replace(r"\ ", r"\s+").replace("'", r"['’]"), re.I
+        r"^\s*" + re.escape(label).replace(r"\ ", r"\s+").replace("'", r"['’‘]") + r"\s*$", re.I
     )
     candidates = [
         frame.get_by_role("button", name=regex),
@@ -236,7 +240,7 @@ def click_saved_account(frame, email):
     Microsoft's account picker uses clickable tiles that often have no
     button/link role, so generic `get_by_role`-only helpers miss them.
     """
-    email_pattern = re.compile(re.escape(email), re.I)
+    email_pattern = re.compile(r"^\s*" + re.escape(email) + r"\s*$", re.I)
     candidates = [
         frame.locator('[data-test-id="accountTile"]').filter(has_text=email_pattern),
         frame.locator('[data-test-id="signInName"]').filter(has_text=email_pattern),
@@ -335,18 +339,14 @@ def f5_session(context):
     # Prefer cookies scoped to the actual tunnel server.
     for domain in ("vpn-2fa.uliege.be", "vpn.uliege.be"):
         for c in cookies:
-            if c["name"] == "MRHSession" and (
-                c["domain"].lstrip(".") == domain or c["domain"].startswith(".uliege.be")
-            ):
+            if c["name"] == "MRHSession" and c["value"] and c["domain"].lstrip(".") in {domain, "uliege.be"}:
                 return c["value"]
     return None
 
 
 def authenticated_f5_frame(frame):
     url = urlsplit(frame.url)
-    if url.hostname not in F5_HOSTS:
-        return False
-    return url.path.startswith("/vdesk/") or url.path.startswith("/vdesk")
+    return host(frame.url) in F5_HOSTS and (url.path == "/vdesk" or url.path.startswith("/vdesk/"))
 
 
 def label_visible(frame, labels):
@@ -398,6 +398,39 @@ def microsoft_stay_signed_in_prompt(frame):
     return any(normalize_ui_text(label) in body for label in MS_STAY_SIGNED_IN_HEADINGS)
 
 
+class F5Completion:
+    """Shared manual/automatic portal completion; early SAML cookies aren't success."""
+    def __init__(self):
+        self.saw_inspection = False
+        self.candidate = None
+        self.since = None
+
+    def observe(self, context, current_frames=None, now=None):
+        current_frames = frames(context) if current_frames is None else current_frames
+        now = time.monotonic() if now is None else now
+        session = f5_session(context)
+        inspection = any(host(f.url) in F5_HOSTS and endpoint_inspection_visible(f)
+                         for f in current_frames)
+        if inspection:
+            self.saw_inspection = True
+        if session and not inspection and any(authenticated_f5_frame(f) for f in current_frames):
+            return session
+        # /my.policy is accepted only after an actual inspection choice was
+        # observed and disappeared. ACS navigation alone proves nothing.
+        landing = any(host(f.url) in F5_HOSTS and urlsplit(f.url).path == "/my.policy"
+                      for f in current_frames)
+        identity_page = any(microsoft_host(f.url) or host(f.url) == "idp.uliege.be"
+                            for f in current_frames)
+        if session and self.saw_inspection and not inspection and landing and not identity_page:
+            if session != self.candidate:
+                self.candidate, self.since = session, now
+            if now - self.since >= 2:
+                return session
+        else:
+            self.candidate, self.since = None, None
+        return None
+
+
 def auth(headless, email, username=None, timeout=240):
     PROFILE.mkdir(parents=True, exist_ok=True)
     PROFILE.chmod(0o700)
@@ -425,8 +458,7 @@ def auth(headless, email, username=None, timeout=240):
             last_stage = None
             last_click = {}
             last_host_state = None
-            after_inspection = False
-            first_authenticated_f5 = None
+            completion = F5Completion()
             deadline = time.monotonic() + timeout
 
             def cooldown(key, seconds=3):
@@ -449,17 +481,8 @@ def auth(headless, email, username=None, timeout=240):
                     print("Browser hosts:", ", ".join(hosts), flush=True)
                     last_host_state = hosts
 
-                session = f5_session(context)
-                # Some ULiège sessions return to /my.policy rather than /vdesk.
-                # Record the POST-ACS/inspection stage even if the user clicks
-                # Skip Inspection themselves in a visible debug browser.
-                if any(
-                    host(f.url) in F5_HOSTS
-                    and urlsplit(f.url).path.startswith("/saml/sp/profile/post/acs")
-                    for f in fs
-                ):
-                    after_inspection = True
-                if session and any(authenticated_f5_frame(f) for f in fs):
+                session = completion.observe(context, fs)
+                if session:
                     print("Authenticated F5 portal reached; session acquired.", flush=True)
                     return session
 
@@ -470,11 +493,8 @@ def auth(headless, email, username=None, timeout=240):
                 for f in fs:
                     if host(f.url) not in F5_HOSTS:
                         continue
-                    if endpoint_inspection_visible(f):
-                        after_inspection = True
                     if cooldown("f5-skip", 5) and click_any(f, F5_SKIP_INSPECTION):
                         announce("Selecting the portal's Skip Inspection option...")
-                        after_inspection = True
                         selected = True
                         break
                 if selected:
@@ -484,7 +504,7 @@ def auth(headless, email, username=None, timeout=240):
                 # Microsoft Entra login, including passwordless sign-in and
                 # switching from push notification to verification codes.
                 for f in fs:
-                    if not host(f.url).endswith("microsoftonline.com"):
+                    if not microsoft_host(f.url):
                         continue
 
                     # 0. Microsoft may first show "Pick an account" instead
@@ -637,25 +657,9 @@ def auth(headless, email, username=None, timeout=240):
                     time.sleep(0.7)
                     continue
 
-                # Some F5 portals stay on /my.policy instead of /vdesk/ after
-                # successful inspection. Do not mistake an early SAML cookie
-                # for a finished login: wait until F5 is showing its portal.
-                if session:
-                    landing = any(
-                        host(f.url) in F5_HOSTS and (
-                            "/my.policy" in urlsplit(f.url).path
-                            or "/vdesk" in urlsplit(f.url).path
-                        ) for f in fs
-                    )
-                    if landing and after_inspection:
-                        first_authenticated_f5 = first_authenticated_f5 or time.monotonic()
-                        if time.monotonic() - first_authenticated_f5 > 2:
-                            print("F5 session acquired after endpoint prompt.", flush=True)
-                            return session
-
                 time.sleep(0.5)
 
-            if session:
+            if f5_session(context):
                 print(
                     "F5 session cookie was present but the authenticated portal could not be confirmed.",
                     flush=True,
@@ -674,46 +678,39 @@ def auth(headless, email, username=None, timeout=240):
             context.close()
 
 
-def start_tunnel(session, timeout=40):
-    # gof5 currently accepts session via --session, which is visible in local
-    # process arguments while running. The token is never printed here.
-    proc = subprocess.Popen(
-        ["sudo", "gof5", "--server", SERVER, "--session", session],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
-    )
-    established = threading.Event()
+HELPER = "/Library/PrivilegedHelperTools/be.uliege.vpn/helper"
 
-    def logs():
-        for line in proc.stdout:
-            print(line, end="", flush=True)
-            if "Connection established" in line:
-                established.set()
 
-    threading.Thread(target=logs, daemon=True).start()
+def helper_status():
+    result = subprocess.run(["/usr/bin/sudo", "-n", HELPER, "status"],
+                            capture_output=True, text=True, timeout=5)
+    return result.stdout.strip() if result.returncode == 0 else "UNKNOWN"
+
+
+def start_tunnel(session, timeout=8):
+    result = subprocess.run(["/usr/bin/sudo", "-n", HELPER, "start"],
+                            input=session + "\n", capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        raise RuntimeError("VPN support could not start. Check one-time setup.")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if established.wait(0.25):
-            return proc
-        if proc.poll() is not None:
-            break
-    print("gof5 did not establish the tunnel within the timeout.", flush=True)
-    stop_tunnel(proc)
-    return None
+        state = helper_status()
+        if state != "STOPPED":
+            print("VPN process started; routing is unverified. Only explicit Ctrl+C disconnects.", flush=True)
+            return True
+        time.sleep(0.5)
+    return False
 
 
-def stop_tunnel(proc):
-    if proc.poll() is not None:
-        return
-    proc.send_signal(signal.SIGINT)
+def wait_for_tunnel():
     try:
-        proc.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        while True:
+            if helper_status() == "STOPPED":
+                return
+            time.sleep(2)
+    except KeyboardInterrupt:
+        # A status timeout must never initiate stop. Only the user's interrupt can.
+        subprocess.run(["/usr/bin/sudo", "-n", HELPER, "stop"], check=True, timeout=25)
 
 
 def main():
@@ -728,8 +725,9 @@ def main():
     if not email:
         parser.error("Set ULIEGE_EMAIL to your university Microsoft email address")
     username = os.environ.get("ULIEGE_USERNAME", "").strip() or None
-    if not args.auth_only:
-        subprocess.run(["sudo", "-v"], check=True)
+    if not args.auth_only and helper_status() != "STOPPED":
+        print("An existing or unverified VPN session may be running. Use the menu bar app to manage it.", flush=True)
+        return
 
     if not args.refresh and not args.auth_only:
         saved = keyring.get_password(F5_SESSION_SERVICE, USER)
@@ -738,10 +736,7 @@ def main():
             proc = start_tunnel(saved, timeout=30)
             if proc:
                 print("VPN connected. Ctrl+C disconnects.", flush=True)
-                try:
-                    proc.wait()
-                except KeyboardInterrupt:
-                    stop_tunnel(proc)
+                wait_for_tunnel()
                 return
             print("Saved session failed; opening Microsoft sign-in.", flush=True)
 
@@ -762,12 +757,12 @@ def main():
     proc = start_tunnel(session)
     if not proc:
         raise SystemExit("Could not connect using the authenticated session. Try --headed --refresh.")
-    keyring.set_password(F5_SESSION_SERVICE, USER, session)
-    print("VPN connected. Ctrl+C disconnects.", flush=True)
     try:
-        proc.wait()
-    except KeyboardInterrupt:
-        stop_tunnel(proc)
+        keyring.set_password(F5_SESSION_SERVICE, USER, session)
+    except Exception:
+        print("Session couldn't be saved for reuse; VPN left running.", flush=True)
+    print("VPN running (routing unverified). Ctrl+C disconnects.", flush=True)
+    wait_for_tunnel()
 
 
 if __name__ == "__main__":

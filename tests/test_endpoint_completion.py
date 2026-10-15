@@ -7,8 +7,8 @@ SWIFT = (Path(__file__).resolve().parents[1] / "Sources/ULiegeVPNApp.swift").rea
 class F5CompletionTests(unittest.TestCase):
     def test_observe_manual_inspection(self):
         self.assertIn("def endpoint_inspection_visible(frame):", SRC)
-        self.assertIn("if endpoint_inspection_visible(f):", SRC)
-        self.assertIn("after_inspection = True", SRC)
+        self.assertIn("endpoint_inspection_visible(f)", SRC)
+        self.assertIn("self.saw_inspection = True", SRC)
 
     def test_auth_and_tunnel_failures_are_distinguishable(self):
         self.assertIn("F5 session cookie was present but", SRC)

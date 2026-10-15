@@ -9,8 +9,11 @@ Optional automatic authentication stores a university password and personal
 TOTP enrollment secret in this user's login Keychain. Browser authentication
 doesn't need these credentials, but F5 session cookies are sensitive and may be
 cached in the login Keychain. An F5 cookie is passed to the privileged gof5
-client at connect time; the current upstream CLI exposes it in process
-arguments on some systems. Never publish terminal authentication logs.
+client at connect time. The v0.5.3 helper uses a private input pipe; older
+installed helpers still expose the cookie through process arguments until
+separately updated. gof5 may persist the session in its root-only configuration
+directory; explicit Disconnect removes that cookie file. A crash may leave it
+until the next start/stop operation. Never publish raw authentication logs.
 
 You can remove optional automatic sign-in credentials in the app's setup
 window. Removing the app by itself does not revoke Microsoft MFA enrollment,

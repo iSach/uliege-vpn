@@ -1,4 +1,5 @@
-# Build-time only. The packaged app needs none of these installed by users.
-pyinstaller>=6.14,<7
-playwright>=1.55,<2
-keyring>=25.6,<27
+# Exact versions validated for this preview. Build-time dependencies only.
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+playwright==1.64.0
+keyring==25.7.0

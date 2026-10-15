@@ -29,7 +29,7 @@ private enum VPNError: LocalizedError {
 }
 
 /// Never invokes a shell and never includes a session token in argv for sudo.
-/// The root helper ultimately passes --session to gof5 because that is gof5's API.
+/// The hardened root helper forwards the session through another private pipe.
 private enum Commands {
     static func run(_ path: String, _ args: [String],
                     input: Data? = nil, environment: [String: String]? = nil,
@@ -158,18 +158,12 @@ private enum BrandIcon {
 }
 
 private enum ConnectionProbe {
-    static func connected() -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: VPNConstants.helper) else { return false }
-        guard let helper = try? Commands.run("/usr/bin/sudo", ["-n", VPNConstants.helper, "status"], timeout: 5),
-              helper.exitCode == 0, helper.output.contains("RUNNING") else { return false }
-        guard let route = try? Commands.run("/sbin/route", ["-n", "get", "8.8.8.8"], timeout: 5),
-              route.exitCode == 0,
-              route.output.range(of: #"interface:\s+utun\d+"#, options: .regularExpression) != nil else {
-            return false
+    static func sample() -> TunnelHealth {
+        guard FileManager.default.isExecutableFile(atPath: VPNConstants.helper) else { return .stopped }
+        return TunnelProbe.sample(helper: VPNConstants.helper) { path, args, timeout in
+            guard let result = try? Commands.run(path, args, timeout: timeout) else { return nil }
+            return ProbeResult(exitCode: result.exitCode, output: result.output)
         }
-        guard let dns = try? Commands.run("/usr/sbin/scutil", ["--dns"], timeout: 5),
-              dns.exitCode == 0, dns.output.contains(VPNConstants.vpnDNS) else { return false }
-        return true
     }
 }
 
@@ -178,7 +172,8 @@ final class VPNModel: ObservableObject {
     enum State: Equatable {
         case disconnected
         case connecting
-        case connected
+        case connected(TunnelQuality)
+        case statusUnavailable
         case disconnecting
         case error(String)
 
@@ -186,7 +181,8 @@ final class VPNModel: ObservableObject {
             switch self {
             case .disconnected: return "Disconnected"
             case .connecting: return "Connecting…"
-            case .connected: return "Connected"
+            case .connected(let quality): return quality.title
+            case .statusUnavailable: return "VPN status unavailable"
             case .disconnecting: return "Disconnecting…"
             case .error: return "Connection failed"
             }
@@ -197,16 +193,19 @@ final class VPNModel: ObservableObject {
     @Published private(set) var detail = "Ready"
     @Published private(set) var since: Date?
     @Published private(set) var helperInstalled = FileManager.default.isExecutableFile(atPath: VPNConstants.helper)
+    @Published private(set) var helperNeedsUpdate = false
 
     @AppStorage("universityEmail") var universityEmail = ""
     @AppStorage("universityUsername") var universityUsername = ""
     @AppStorage("requireTouchID") var requireTouchID = false
     @AppStorage("showBrowser") var showBrowser = false
-    @AppStorage("preferInteractiveLogin") var preferInteractiveLogin = false
+    @AppStorage("preferInteractiveLogin") var preferInteractiveLogin = true
 
     private var polling: Timer?
-    private var busy = false
+    @Published private var busy = false
     private var sessionCacheWarning = false
+    private var refreshing = false
+    private var operationGeneration = 0
 
     init() {
         polling = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -216,7 +215,19 @@ final class VPNModel: ObservableObject {
     }
 
     var connected: Bool { if case .connected = state { return true }; return false }
+    var canDisconnect: Bool { connected || state == .statusUnavailable }
+    var verified: Bool {
+        if case .connected(let quality) = state { return quality != .unverified }
+        return false
+    }
     var working: Bool { busy }
+    var chromeInstalled: Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") != nil
+    }
+    var emailConfigured: Bool {
+        let email = universityEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return email.contains("@") && !email.contains(where: { $0.isWhitespace })
+    }
     var automaticLoginAvailable: Bool { KeychainReadiness.automaticLoginAvailable }
 
     func openSupportInstaller() {
@@ -248,42 +259,57 @@ final class VPNModel: ObservableObject {
         }
     }
 
+    private func apply(_ health: TunnelHealth) {
+        switch health {
+        case .running(let quality):
+            if since == nil { since = Date() }
+            state = .connected(quality)
+            detail = quality.detail + (sessionCacheWarning ? " Session couldn't be saved for reuse." : "")
+        case .stopped:
+            state = .disconnected
+            sessionCacheWarning = false
+            since = nil
+            detail = helperInstalled ? "Ready" : "One-time helper setup required"
+        case .unavailable:
+            state = .statusUnavailable
+            detail = "Helper status could not be read. A session may still be running; Disconnect remains available."
+        }
+    }
+
     func refresh() {
-        guard !busy else { return }
-        let installed = FileManager.default.isExecutableFile(atPath: VPNConstants.helper)
-        helperInstalled = installed
-        DispatchQueue.global(qos: .utility).async {
-            let online = ConnectionProbe.connected()
+        guard !busy, !refreshing else { return }
+        helperInstalled = FileManager.default.isExecutableFile(atPath: VPNConstants.helper)
+        if helperInstalled, let bundled = Bundle.main.resourceURL?.appendingPathComponent("Support/helper.sh"),
+           let expected = try? Data(contentsOf: bundled),
+           let installed = try? Data(contentsOf: URL(fileURLWithPath: VPNConstants.helper)) {
+            helperNeedsUpdate = expected != installed
+        }
+        refreshing = true
+        let generation = operationGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let health = ConnectionProbe.sample()
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.busy else { return }
-                if online {
-                    if !self.connected { self.since = Date() }
-                    self.state = .connected
-                    self.detail = self.sessionCacheWarning
-                        ? "Connected · Session couldn't be saved for reuse"
-                        : "ULiège · Full tunnel"
-                } else {
-                    self.state = .disconnected
-                    self.sessionCacheWarning = false
-                    self.since = nil
-                    self.detail = installed ? "Ready" : "One-time helper setup required"
-                }
+                guard let self else { return }
+                self.refreshing = false
+                guard !self.busy, generation == self.operationGeneration else { return }
+                self.apply(health)
             }
         }
     }
 
     func connect() {
-        guard !busy else { return }
+        guard !busy, !canDisconnect else { return }
         guard helperInstalled else {
             state = .error("Run the installer once to enable the VPN helper.")
             detail = "See README for installation"
             return
         }
-        guard !universityEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard emailConfigured else {
             state = .error("Enter your university email in Settings.")
             detail = "University email is required"
             return
         }
+        operationGeneration += 1
         busy = true
         state = .connecting
         detail = "Preparing connection…"
@@ -294,18 +320,19 @@ final class VPNModel: ObservableObject {
                 let email = universityEmail.trimmingCharacters(in: .whitespacesAndNewlines)
                 let user = universityUsername.trimmingCharacters(in: .whitespacesAndNewlines)
                 let headed = showBrowser
-                let sessionCached = try await performConnect(
+                let outcome = try await performConnect(
                     email: email, username: user,
                     headed: headed, preferInteractive: preferInteractiveLogin)
-                since = Date()
-                state = .connected
-                sessionCacheWarning = !sessionCached
-                detail = sessionCached
-                    ? "ULiège · Full tunnel"
-                    : "Connected · Session couldn't be saved for reuse"
+                sessionCacheWarning = !outcome.cached
+                apply(outcome.health)
             } catch {
-                state = .error(error.localizedDescription)
-                detail = "Check connection settings and authentication"
+                let health = await Task.detached { ConnectionProbe.sample() }.value
+                if health.canDisconnect {
+                    apply(health)
+                } else {
+                    state = .error(error.localizedDescription)
+                    detail = "Check connection settings and authentication"
+                }
             }
             busy = false
         }
@@ -313,21 +340,19 @@ final class VPNModel: ObservableObject {
 
     func disconnect() {
         guard !busy else { return }
+        operationGeneration += 1
         busy = true
         state = .disconnecting
         detail = "Stopping tunnel…"
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = try? Commands.run("/usr/bin/sudo", ["-n", VPNConstants.helper, "stop"], timeout: 25)
-            let online = ConnectionProbe.connected()
+            let health = ConnectionProbe.sample()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.busy = false
-                if online || result?.exitCode != 0 {
-                    self.state = .error("Could not stop gof5. Check helper installation.")
-                } else {
-                    self.state = .disconnected
-                    self.since = nil
-                    self.detail = "Ready"
+                self.apply(health)
+                if result?.exitCode != 0 || health.canDisconnect {
+                    self.detail = "Disconnect could not be confirmed. You can retry Disconnect or check VPN support."
                 }
             }
         }
@@ -346,50 +371,46 @@ final class VPNModel: ObservableObject {
         guard authorized else { throw VPNError.message("Touch ID cancelled.") }
     }
 
+    private struct ConnectionOutcome {
+        let health: TunnelHealth
+        let cached: Bool
+    }
+
     private func performConnect(email: String, username: String,
-                                headed: Bool, preferInteractive: Bool) async throws -> Bool {
-        try await Task.detached(priority: .userInitiated) { [weak self] () throws -> Bool in
-            if ConnectionProbe.connected() { return true }
+                                headed: Bool, preferInteractive: Bool) async throws -> ConnectionOutcome {
+        try await Task.detached(priority: .userInitiated) { [self] () throws -> ConnectionOutcome in
+            let existing = ConnectionProbe.sample()
+            // Never authenticate again or replace an existing/unknown session.
+            if existing.canDisconnect { return ConnectionOutcome(health: existing, cached: true) }
 
             // Keychain read errors should not prevent a fresh sign-in.
             if let saved = try? SessionStore.current() {
-                await MainActor.run { self?.detail = "Trying saved F5 session…" }
-                // Rejected/expired cache must fall back to sign-in, not fail.
-                do {
-                    try Self.startHelper(session: saved)
-                    if Self.waitForConnection(seconds: 20) { return true }
-                } catch {
-                    // Do not print cookie or pass it to an error formatter.
-                }
-                Self.stopHelper()
+                await MainActor.run { self.detail = "Trying saved F5 session…" }
+                try? Self.startHelper(session: saved)
+                let health = Self.waitForConnection(seconds: 8)
+                if health.canDisconnect { return ConnectionOutcome(health: health, cached: true) }
+                // Retry authentication only after the helper explicitly reports STOPPED.
             }
 
             await MainActor.run {
-                self?.detail = preferInteractive
-                    ? "Waiting for browser sign-in…"
-                    : "Signing in with Microsoft…"
+                self.detail = preferInteractive ? "Waiting for browser sign-in…" : "Signing in with Microsoft…"
             }
             let fresh = try Self.authenticate(email: email, username: username,
                                               headed: headed, preferInteractive: preferInteractive)
-            await MainActor.run { self?.detail = "Starting tunnel and checking DNS…" }
+            await MainActor.run { self.detail = "Starting tunnel and observing routing…" }
             try Self.startHelper(session: fresh)
-            if Self.waitForConnection(seconds: 30) {
-                // Connection must work even if Keychain access is denied.
-                do {
-                    try SessionStore.save(fresh)
-                    return true
-                } catch {
-                    return false
-                }
-            }
-            let failure = Self.tunnelFailureDiagnosis()
-            Self.stopHelper()
-            throw VPNError.message(failure)
+            let health = Self.waitForConnection(seconds: 8)
+            guard health.canDisconnect else { throw VPNError.message(Self.tunnelFailureDiagnosis()) }
+            // Connection must work even if Keychain access is denied.
+            var cached = true
+            do { try SessionStore.save(fresh) } catch { cached = false }
+            return ConnectionOutcome(health: health, cached: cached)
         }.value
     }
 
     nonisolated private static func startHelper(session: String) throws {
-        guard !session.contains("\n") && !session.contains("\r") else {
+        guard (10...4096).contains(session.utf8.count),
+              session.utf8.allSatisfy({ $0 >= 33 && $0 <= 126 }) else {
             throw VPNError.message("Invalid F5 session format.")
         }
         let result = try Commands.run("/usr/bin/sudo", ["-n", VPNConstants.helper, "start"],
@@ -399,41 +420,12 @@ final class VPNModel: ObservableObject {
         }
     }
 
-    nonisolated private static func stopHelper() {
-        _ = try? Commands.run("/usr/bin/sudo", ["-n", VPNConstants.helper, "stop"], timeout: 25)
-    }
-
-    /// Return only fixed, non-sensitive health information. Never read gof5
-    /// command-line arguments or its raw log because they can contain cookies.
     nonisolated private static func tunnelFailureDiagnosis() -> String {
-        let helper = try? Commands.run(
-            "/usr/bin/sudo", ["-n", VPNConstants.helper, "status"], timeout: 5
-        )
-        guard helper?.exitCode == 0 else {
-            return "VPN helper status failed. Check its one-time installation."
-        }
-        if !(helper?.output.contains("RUNNING") ?? false) {
-            return "gof5 exited before the VPN tunnel became active."
-        }
-        let route = try? Commands.run("/sbin/route", ["-n", "get", "8.8.8.8"], timeout: 5)
-        let routed = route?.exitCode == 0 &&
-            route?.output.range(of: #"interface:\s+utun\d+"#, options: .regularExpression) != nil
-        if !routed {
-            return "gof5 is running, but the VPN route is missing."
-        }
-        let dns = try? Commands.run("/usr/sbin/scutil", ["--dns"], timeout: 5)
-        if dns?.exitCode != 0 || !(dns?.output.contains(VPNConstants.vpnDNS) ?? false) {
-            return "gof5 is running, but ULiège DNS is not configured."
-        }
-        return "The VPN helper is running, but the connection could not be verified."
+        "gof5 exited before routing could be checked. The app did not stop the session. Try a fresh browser sign-in."
     }
 
-    nonisolated private static func waitForConnection(seconds: Int) -> Bool {
-        for _ in 0 ..< seconds {
-            if ConnectionProbe.connected() { return true }
-            Thread.sleep(forTimeInterval: 1)
-        }
-        return false
+    nonisolated private static func waitForConnection(seconds: Int) -> TunnelHealth {
+        TunnelProbe.wait(seconds: TimeInterval(seconds), sample: ConnectionProbe.sample)
     }
 
     nonisolated private static func authenticate(email: String, username: String,
@@ -480,17 +472,16 @@ final class VPNModel: ObservableObject {
     /// exception tracebacks can contain authorization URLs and credentials.
     nonisolated private static func authDiagnostic(_ output: String) -> String {
         let messages = [
-            "Sign-in timed out", "Authentication did not finish",
-            "Timed out during authentication", "Could not open Google Chrome",
-            "Login window closed", "Keychain error",
-            "Timed out", "Could not complete", "No authentication method",
-            "F5 session cookie was present", "F5 session cookie was never received"
+            "Sign-in timed out": "Sign-in timed out. Try browser sign-in again.",
+            "Authentication did not finish": "Authentication did not finish. Try visible browser sign-in.",
+            "Could not open Google Chrome": "Install Google Chrome to use university sign-in.",
+            "Login window closed": "The login window closed before sign-in completed.",
+            "Keychain error": "Keychain access failed. Check local sign-in setup.",
+            "F5 session cookie was present": "F5 authorization could not be confirmed.",
+            "F5 session cookie was never received": "F5 did not return an authenticated session."
         ]
-        for line in output.components(separatedBy: .newlines).reversed() {
-            if line.count < 160 && messages.contains(where: { line.localizedCaseInsensitiveContains($0) }) &&
-                !line.contains("http") && !line.contains("=") {
-                return String(line.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+        for (phrase, message) in messages where output.localizedCaseInsensitiveContains(phrase) {
+            return message
         }
         return automaticLoginFallbackHint
     }
@@ -523,7 +514,7 @@ final class VPNStatusBarDelegate: NSObject, NSApplicationDelegate {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 330, height: 460)
+        popover.contentSize = NSSize(width: 350, height: 650)
         popover.contentViewController = NSHostingController(rootView: MenuContent(model: model))
         self.popover = popover
 
@@ -542,18 +533,24 @@ final class VPNStatusBarDelegate: NSObject, NSApplicationDelegate {
         observation = model.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                self?.updateIcon(connected: state == .connected)
+                if case .connected(let quality) = state {
+                    self?.updateIcon(connected: true, verified: quality != .unverified, title: quality.title)
+                } else {
+                    self?.updateIcon(connected: false, verified: false, title: state.title)
+                }
             }
     }
 
-    private func updateIcon(connected: Bool) {
+    private func updateIcon(connected: Bool, verified: Bool = true, title: String = "Disconnected") {
         guard let button = item?.button else { return }
         // Copy so that size/template changes never modify the shared asset.
         let img = (BrandIcon.image(connected: connected).copy() as? NSImage) ?? NSImage()
         img.size = NSSize(width: 19, height: 19)
-        img.isTemplate = !connected
+        let warning = (connected && !verified) || title == "VPN status unavailable"
+        img.isTemplate = !connected || warning
         button.image = img
-        button.toolTip = connected ? "ULiège VPN — Connected" : "ULiège VPN — Disconnected"
+        button.contentTintColor = warning ? .systemOrange : nil
+        button.toolTip = "ULiège VPN — " + title
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -581,105 +578,124 @@ private struct MenuContent: View {
     @ObservedObject var model: VPNModel
     @State private var settingsOpen = false
     @State private var now = Date()
+    @AppStorage("onboardingCompleted") private var onboardingCompleted = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(nsImage: BrandIcon.image(connected: true))
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 28, height: 30)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("ULiège VPN").font(.headline)
-                    Text("vpn-2fa.uliege.be").font(.caption).foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Image(nsImage: BrandIcon.image(connected: true))
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 28, height: 30)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("ULiège VPN").font(.headline)
+                        Text("vpn-2fa.uliege.be").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Circle().fill(model.verified ? Color.green : (model.canDisconnect ? Color.orange : Color.gray)).frame(width: 9, height: 9)
                 }
-                Spacer()
-                Circle().fill(model.connected ? Color.green : Color.gray).frame(width: 9, height: 9)
-            }
-            if !model.helperInstalled {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("One-time VPN support setup").font(.headline)
-                    Text("Install the bundled VPN network component before connecting. Administrator approval is required once.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Install VPN Support…") { model.openSupportInstaller() }
-                        .buttonStyle(.bordered)
-                    Text("Experimental installer: adds a restricted passwordless sudo permission. Read SECURITY.md before approving.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                if !model.helperInstalled {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("One-time VPN support setup").font(.headline)
+                        Text("Install the bundled VPN network component before connecting. Administrator approval is required once.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Install VPN Support…") { model.openSupportInstaller() }
+                            .buttonStyle(.bordered)
+                        Text("Experimental installer: adds a restricted passwordless sudo permission. Read SECURITY.md before approving.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
-            }
-            if model.universityEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Welcome · First-time setup").font(.headline)
-                    Text("Enter your own ULiège email and identifier. Browser sign-in works without any TOTP setup.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    TextField("Your university email", text: $model.universityEmail)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("ULiège identifier (e.g. s123456)", text: $model.universityUsername)
-                        .textFieldStyle(.roundedBorder)
+                if !onboardingCompleted || !model.emailConfigured {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Welcome · First-time setup").font(.headline)
+                        Text("Enter your own ULiège email and identifier. Browser sign-in works without any TOTP setup.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        TextField("Your university email", text: $model.universityEmail)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("ULiège identifier (e.g. s123456)", text: $model.universityUsername)
+                            .textFieldStyle(.roundedBorder)
+                        Text(model.chromeInstalled ? "Google Chrome is ready for browser sign-in." : "Install Google Chrome before your first sign-in.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !model.chromeInstalled {
+                            Button("Get Google Chrome ↗") {
+                                NSWorkspace.shared.open(URL(string: "https://www.google.com/chrome/")!)
+                            }
+                        }
+                        Button("Finish setup") { onboardingCompleted = true }
+                            .disabled(!model.emailConfigured || !model.helperInstalled || !model.chromeInstalled)
+                    }
                 }
-            }
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.state.title).font(.title3.weight(.semibold))
-                    Text(model.detail).font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.state.title).font(.title3.weight(.semibold))
+                        Text(model.detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.working { ProgressView().controlSize(.small) }
                 }
-                Spacer()
-                if model.working { ProgressView().controlSize(.small) }
-            }
-            if model.connected, let since = model.since {
-                Text("Connected for \(elapsed(since))")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
-            if case .error(let message) = model.state {
-                Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            }
-            Button {
-                if model.connected { model.disconnect() }
-                else { model.connect() }
-            } label: {
-                Text(model.connected ? "Disconnect" : "Connect")
-                    .frame(maxWidth: .infinity).padding(.vertical, 4)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.working || model.universityEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Divider()
-            DisclosureGroup("Settings", isExpanded: $settingsOpen) {
-                VStack(alignment: .leading, spacing: 12) {
-                    TextField("University email", text: $model.universityEmail)
-                        .textFieldStyle(.roundedBorder)
+                if model.connected, let since = model.since {
+                    Text("Connected for \(elapsed(since))")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                if case .error(let message) = model.state {
+                    Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
+                Button {
+                    if model.canDisconnect { model.disconnect() }
+                    else { model.connect() }
+                } label: {
+                    Text(model.canDisconnect ? "Disconnect" : "Connect")
+                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.working || (!model.canDisconnect && (!model.emailConfigured || !model.helperInstalled || !model.chromeInstalled)))
+                Divider()
+                DisclosureGroup("Settings", isExpanded: $settingsOpen) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField("University email", text: $model.universityEmail)
+                            .textFieldStyle(.roundedBorder)
                         TextField("ULiège identifier (optional)", text: $model.universityUsername)
-                        .textFieldStyle(.roundedBorder)
-                    Toggle("Require Touch ID to connect", isOn: Binding(
-                        get: { model.requireTouchID },
-                        set: { model.setTouchIDRequired($0) }
-                    ))
-                    Toggle("Use browser sign-in (Authenticator or other MFA)", isOn: $model.preferInteractiveLogin)
-                    if !model.automaticLoginAvailable && !model.preferInteractiveLogin {
-                        Text("No local TOTP/password setup found. Browser sign-in will open automatically when required.")
+                            .textFieldStyle(.roundedBorder)
+                        Toggle("Require Touch ID to connect", isOn: Binding(
+                            get: { model.requireTouchID },
+                            set: { model.setTouchIDRequired($0) }
+                        ))
+                        Toggle("Use browser sign-in (Authenticator or other MFA)", isOn: $model.preferInteractiveLogin)
+                        if !model.automaticLoginAvailable && !model.preferInteractiveLogin {
+                            Text("No local TOTP/password setup found. Browser sign-in will open automatically when required.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if model.helperNeedsUpdate {
+                            Text("VPN support update available. Disconnect before updating to apply the new helper protections.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("Update VPN Support…") { model.openSupportInstaller() }
+                            .disabled(model.working || model.canDisconnect)
+                        Button("Configure automatic TOTP sign-in…") { AutomaticSetupWindow.show(model: model) }
+                        if model.automaticLoginAvailable {
+                            Text("Automatic sign-in credentials found in this Mac’s Keychain.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Toggle("Show browser for automatic sign-in debugging", isOn: $model.showBrowser)
+                        Text("With browser sign-in, you use your own university account and approved MFA. No TOTP secret needs to be configured or shared. Touch ID is an app confirmation, not a protection enforced by the privileged helper.")
                             .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Button("Configure automatic TOTP sign-in…") { AutomaticSetupWindow.show(model: model) }
-                    if model.automaticLoginAvailable {
-                        Text("Automatic sign-in credentials found in this Mac’s Keychain.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Toggle("Show browser for automatic sign-in debugging", isOn: $model.showBrowser)
-                    Text("With browser sign-in, you use your own university account and approved MFA. No TOTP secret needs to be configured or shared. Touch ID is an app confirmation, not a protection enforced by the privileged helper.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }.padding(.top, 8)
+                    }.padding(.top, 8)
+                }
+                HStack {
+                    Button("Refresh status") { model.refresh() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Quit") { NSApplication.shared.terminate(nil) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }.font(.caption)
             }
-            HStack {
-                Button("Refresh status") { model.refresh() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-            }.font(.caption)
+            .padding(18)
         }
-        .padding(18)
-        .frame(width: 330)
+        .frame(width: 350)
+        .frame(maxHeight: 720)
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
     }
 

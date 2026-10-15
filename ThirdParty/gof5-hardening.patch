@@ -1,0 +1,224 @@
+diff --git a/cmd/gof5/main.go b/cmd/gof5/main.go
+index 8ce211b..70cb77e 100644
+--- a/cmd/gof5/main.go
++++ b/cmd/gof5/main.go
+@@ -4,6 +4,7 @@ import (
+ 	"bufio"
+ 	"flag"
+ 	"fmt"
++	"io"
+ 	"log"
+ 	"os"
+ 	"runtime"
+@@ -29,12 +30,15 @@ func fatal(err error) {
+ 
+ func main() {
+ 	var version bool
++	var sessionStdin bool
+ 	var opts client.Options
+ 
+ 	flag.StringVar(&opts.Server, "server", "", "")
+ 	flag.StringVar(&opts.Username, "username", "", "")
+ 	flag.StringVar(&opts.Password, "password", "", "")
+ 	flag.StringVar(&opts.SessionID, "session", "", "Reuse a session ID")
++	flag.StringVar(&opts.ConfigDir, "config-dir", "", "Explicit configuration directory (ignores sudo user home)")
++	flag.BoolVar(&sessionStdin, "session-stdin", false, "Read session from private stdin instead of process arguments")
+ 	flag.StringVar(&opts.CACert, "ca-cert", "", "Path to a custom CA certificate")
+ 	flag.StringVar(&opts.Cert, "cert", "", "Path to a user TLS certificate")
+ 	flag.StringVar(&opts.Key, "key", "", "Path to a user TLS key")
+@@ -51,6 +55,18 @@ func main() {
+ 		os.Exit(0)
+ 	}
+ 
++	if sessionStdin {
++		if opts.SessionID != "" {
++			fatal(fmt.Errorf("session and session-stdin are mutually exclusive"))
++		}
++		var err error
++		opts.SessionID, err = readSession(os.Stdin)
++		if err != nil {
++			fatal(err)
++		}
++		opts.SessionOnly = true
++	}
++
+ 	if opts.ProfileIndex < 0 {
+ 		fatal(fmt.Errorf("profile-index cannot be negative"))
+ 	}
+@@ -71,3 +87,23 @@ func main() {
+ 		fatal(err)
+ 	}
+ }
++
++// Bound input and return fixed errors; never echo authentication material.
++func readSession(reader io.Reader) (string, error) {
++	raw, err := io.ReadAll(io.LimitReader(reader, 4098))
++	if err != nil {
++		return "", fmt.Errorf("cannot read private session input")
++	}
++	if len(raw) > 0 && raw[len(raw)-1] == '\n' {
++		raw = raw[:len(raw)-1]
++	}
++	if len(raw) < 10 || len(raw) > 4096 {
++		return "", fmt.Errorf("invalid private session length")
++	}
++	for _, value := range raw {
++		if value < 33 || value > 126 {
++			return "", fmt.Errorf("invalid private session format")
++		}
++	}
++	return string(raw), nil
++}
+diff --git a/cmd/gof5/private_session_test.go b/cmd/gof5/private_session_test.go
+new file mode 100644
+index 0000000..65cff76
+--- /dev/null
++++ b/cmd/gof5/private_session_test.go
+@@ -0,0 +1,19 @@
++package main
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestPrivateSession(t *testing.T) {
++	for _, value := range []string{"", "short", "abcdefghij\nINJECT", strings.Repeat("a", 4097), "abcdefghij\r\n"} {
++		if _, err := readSession(strings.NewReader(value)); err == nil {
++			t.Fatal("accepted invalid session")
++		}
++	}
++	for _, value := range []string{"abcdefghij", "abcdefghij\n", strings.Repeat("b", 4096) + "\n"} {
++		if _, err := readSession(strings.NewReader(value)); err != nil {
++			t.Fatal(err)
++		}
++	}
++}
+diff --git a/pkg/client/client.go b/pkg/client/client.go
+index 44ab29f..000b0af 100644
+--- a/pkg/client/client.go
++++ b/pkg/client/client.go
+@@ -25,6 +25,8 @@ type Options struct {
+ 	Username      string
+ 	Password      string
+ 	SessionID     string
++	ConfigDir     string
++	SessionOnly   bool
+ 	CACert        string
+ 	Cert          string
+ 	Key           string
+@@ -110,7 +112,7 @@ func Connect(opts *Options) error {
+ 	opts.Server = u.Host
+ 
+ 	// read config
+-	cfg, err := config.ReadConfig(opts.Debug)
++	cfg, err := config.ReadConfig(opts.Debug, opts.ConfigDir)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -178,6 +180,10 @@ func Connect(opts *Options) error {
+ 	}
+ 
+ 	if resp.StatusCode == 302 {
++		if opts.SessionOnly {
++			resp.Body.Close()
++			return fmt.Errorf("provided session rejected")
++		}
+ 		// need to relogin
+ 		_, err = io.Copy(ioutil.Discard, resp.Body)
+ 		if err != nil {
+diff --git a/pkg/config/config.go b/pkg/config/config.go
+index d33bb7e..b50a380 100644
+--- a/pkg/config/config.go
++++ b/pkg/config/config.go
+@@ -28,30 +28,41 @@ var (
+ 	supportedDrivers        = []string{"wireguard", "pppd"}
+ )
+ 
+-func ReadConfig(debug bool) (*Config, error) {
++func ReadConfig(debug bool, explicitPath string) (*Config, error) {
+ 	var err error
+ 	var usr *user.User
+ 
+-	// resolve sudo user ID
+-	if id, sudoUID := os.Geteuid(), os.Getenv("SUDO_UID"); id == 0 && sudoUID != "" {
+-		usr, err = user.LookupId(sudoUID)
+-		if err != nil {
+-			log.Printf("failed to lookup user ID: %s", err)
+-			if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+-				usr, err = user.Lookup(sudoUser)
+-				if err != nil {
+-					return nil, fmt.Errorf("failed to lookup user name: %s", err)
+-				}
+-			}
++	// An explicit private directory must never consult SUDO_UID or user files.
++	if explicitPath != "" {
++		if !filepath.IsAbs(explicitPath) {
++			return nil, fmt.Errorf("config-dir must be absolute")
+ 		}
++		usr = &user.User{Uid: strconv.Itoa(os.Geteuid()), Gid: strconv.Itoa(os.Getegid())}
+ 	} else {
+-		// detect home directory
+-		usr, err = user.Current()
+-		if err != nil {
+-			return nil, fmt.Errorf("failed to detect home directory: %s", err)
++		// resolve sudo user ID
++		if id, sudoUID := os.Geteuid(), os.Getenv("SUDO_UID"); id == 0 && sudoUID != "" {
++			usr, err = user.LookupId(sudoUID)
++			if err != nil {
++				log.Printf("failed to lookup user ID: %s", err)
++				if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
++					usr, err = user.Lookup(sudoUser)
++					if err != nil {
++						return nil, fmt.Errorf("failed to lookup user name: %s", err)
++					}
++				}
++			}
++		} else {
++			// detect home directory
++			usr, err = user.Current()
++			if err != nil {
++				return nil, fmt.Errorf("failed to detect home directory: %s", err)
++			}
+ 		}
+ 	}
+-	configPath := filepath.Join(usr.HomeDir, configDir)
++	configPath := explicitPath
++	if configPath == "" {
++		configPath = filepath.Join(usr.HomeDir, configDir)
++	}
+ 
+ 	var uid, gid int
+ 	// windows preserves the original user parameters, no need to detect uid/gid
+diff --git a/pkg/config/private_config_test.go b/pkg/config/private_config_test.go
+new file mode 100644
+index 0000000..b9b633b
+--- /dev/null
++++ b/pkg/config/private_config_test.go
+@@ -0,0 +1,26 @@
++package config
++
++import (
++	"os"
++	"path/filepath"
++	"strconv"
++	"testing"
++)
++
++func TestExplicitConfigIgnoresSudoUser(t *testing.T) {
++	dir := t.TempDir()
++	t.Setenv("SUDO_UID", "99999999")
++	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("driver: wireguard\n"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	cfg, err := ReadConfig(false, dir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if cfg.Path != dir || strconv.Itoa(cfg.Uid) != strconv.Itoa(os.Geteuid()) {
++		t.Fatal("wrong config location or owner")
++	}
++	if _, err := ReadConfig(false, "relative"); err == nil {
++		t.Fatal("accepted relative path")
++	}
++}

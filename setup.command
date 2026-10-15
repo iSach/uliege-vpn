@@ -11,22 +11,23 @@ if ! xcrun --find swiftc >/dev/null 2>&1; then
     exit 1
 fi
 if ! command -v brew >/dev/null 2>&1; then
-    echo 'Homebrew is required for gof5. Install it from https://brew.sh and retry.'
+    echo 'Homebrew is required for build dependencies. Install it from https://brew.sh and retry.'
     exit 1
 fi
 if [[ ! -d '/Applications/Google Chrome.app' && ! -d "$HOME/Applications/Google Chrome.app" ]]; then
     echo 'Google Chrome is required for university SSO: https://www.google.com/chrome/'
     exit 1
 fi
-if ! command -v gof5 >/dev/null 2>&1; then
-    brew install gof5
+if ! command -v go >/dev/null 2>&1; then
+    echo 'Go is required to build the patched VPN runtime. Install Go, then retry.'
+    exit 1
 fi
 # Python 3.11+ is needed ONLY when building from source; no runtime dependency.
-if ! python3 -c 'import sys; assert sys.version_info[:2] >= (3,11)' >/dev/null 2>&1; then
+if ! python3 -c 'import sys; assert (3,11) <= sys.version_info[:2] < (3,14)' >/dev/null 2>&1; then
     echo 'The build needs Python 3.11+. Installing build-only Python 3.13.'
     brew install python@3.13
 fi
-./build.sh
+INSTALL_APP=1 ./build.sh
 echo 'WARNING: experimental privileged helper still uses NOPASSWD sudoers.'
 echo 'Read SECURITY.md before agreeing to install it or sharing this build.'
 ./install-helper.sh

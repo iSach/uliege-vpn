@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class PreviewDistribution(unittest.TestCase):
     def test_opt_out_does_not_overwrite_local_installation(self):
         build = (ROOT / "build.sh").read_text()
-        self.assertIn('INSTALL_APP="${INSTALL_APP:-1}"', build)
+        self.assertIn('INSTALL_APP="${INSTALL_APP:-0}"', build)
         self.assertIn('if [[ "$INSTALL_APP" == 1 ]]; then', build)
         self.assertIn('Contents/Resources', build)
 
@@ -29,8 +29,9 @@ class PreviewDistribution(unittest.TestCase):
     def test_privileged_installer_uses_fixed_path_for_go5(self):
         script = (ROOT / "install-helper.sh").read_text()
         self.assertIn('VPNRuntime/gof5', script)
-        self.assertIn('visudo -cf', script)
-        self.assertIn('NOPASSWD:', script)  # explicit, documented release blocker
+        privileged = (ROOT / 'Helper/install-root.sh').read_text()
+        self.assertIn('visudo -cf', privileged)
+        self.assertIn('NOPASSWD: NOSETENV:', privileged)  # explicit, documented release blocker
 
     def test_release_is_only_a_draft(self):
         action = (ROOT / ".github/workflows/draft-release.yml").read_text()

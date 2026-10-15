@@ -1,42 +1,42 @@
-# ULiège VPN v0.5 — unsigned preview
+# ULiège VPN v0.5.3 — unsigned preview
 
-This is an **unofficial, unnotarized, experimental** client for testers who
-trust the code and understand the security implications. It is **not** an
-approved university VPN application and is **not recommended for broad
-installation** until the privileged helper and branding have been reviewed.
+The app no longer disconnects a working university session when route or DNS
+verification times out. Split routing and uncertain health remain manageable
+with Disconnect, including when helper status is unavailable. Health hints
+separate sampled IPv4 routing, university routing, and unverified running
+sessions; they do not claim IPv6 coverage or prove end-to-end connectivity.
 
-- Native menu bar status, Connect/Disconnect, optional Touch ID confirmation.
-- Browser sign-in with regular ULiège/Microsoft MFA or opt-in automatic TOTP.
-- Bundled Python authentication runtime, Playwright, and gof5. No Homebrew,
-  `uv`, `oathtool`, or system Python required to **run** the prebuilt app.
-- Separate one-time admin-authorized helper installer launched from the app.
-- Builds for Apple Silicon and Intel, as two unsigned DMG files.
+- Bounds startup checks by elapsed time and ignores stale polling results.
+- Retries cached authentication only after an explicit stopped helper status.
+- Builds a pinned gof5 v0.1.5 derivative with `--config-dir` and `--session-stdin`.
+  The new helper no longer lets gof5 consult a sudo user's config and no longer
+  places the F5 token in process arguments or environment.
+- Checks privileged file ownership, modes, links and process identity; serializes
+  start/stop. Installer rejects running/unknown sessions and validates an atomic
+  sudoers candidate. Explicit disconnect removes the root-side cached cookie.
+- Uses exact EN/FR action labels and account email matching, HTTPS-only host
+  checks, and shared F5 portal completion logic for browser and automatic modes.
+- Keeps onboarding visible during input, checks Chrome availability, makes the
+  menu scrollable and defaults new users to browser MFA.
+- Builds without installing by default. Adds native health tests, pinned main
+  Python build dependencies, portable checksums, architecture/signature checks,
+  and a draft-only GitHub prerelease workflow.
+- Declares macOS 13.5 as the minimum required by the bundled Playwright Node
+  runtime and checks every bundled Mach-O slice against that requirement.
 
-**Important:** Installation of VPN support grants the current user restricted
-passwordless root helper commands. Any process running as that user can invoke
-them; the Touch ID preference does not secure the helper. The root gof5 process
-may expose an F5 session token in its arguments. See `SECURITY.md`.
+## Upgrade
 
-Before publication: test both DMGs on clean Macs, check ULiège branding
-permissions, review helper threat model, and confirm the VPN's terms of use.
+The app-side connection fix is compatible with the old helper API. The helper
+security changes require a separate, explicitly authorized support update.
+Disconnect your current session yourself before updating support. Your Keychain
+entries and browser profiles are preserved. No automatic session migration is
+performed and no active VPN is stopped by the installer.
 
-### v0.5.1-preview — French sign-in selector
+## Validation and remaining limits
 
-- Recognizes `Authentification Forte Microsoft` on French ULiège identity-provider pages.
-- Keeps the English `Microsoft MFA Authentification` selector supported.
-- Includes regression tests for both button texts.
-
-### v0.5.2-preview — complete English/French authentication path
-
-- Handles ULiège provider choice and local identifier/password form in EN/FR.
-- Handles Microsoft account picker, passwordless-to-password link, TOTP method
-  selection, alternative MFA method selection, and stay-signed-in prompt in EN/FR.
-- Handles the F5 endpoint-inspection skip choice in EN/FR (where offered).
-- Accepts curly apostrophes, different spacing, and accent variants in labels.
-- Avoids blindly clicking a generic Microsoft Yes/Oui button without the
-  stay-signed-in prompt, and never autoselects federal itsme/eID.
-- Adds localized button tests using real Chromium and privacy-safe fixtures.
-
-Note: labels are based on observed and documented UI patterns, not a live test
-of every Microsoft tenant language variant. Unrecognized pages may still need
-manual interaction through Debug sign-in in browser.
+See VALIDATION.md for the actual local results. This is an unofficial,
+ad-hoc-signed preview. Live ULiège/Microsoft authentication, privileged helper
+installation, Intel execution and clean-machine upgrades remain untested in
+this local run. It is not notarized. The sudoers bridge still grants per-user
+passwordless fixed helper commands and has not been independently audited.
+University branding permission and policy review remain outstanding.

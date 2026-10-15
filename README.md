@@ -1,123 +1,125 @@
-# ULiège VPN for macOS · unofficial preview
+# ULiège VPN for macOS · unofficial v0.5.3 preview
 
-A lightweight macOS menu-bar interface for the [gof5](https://github.com/kayrus/gof5)
-F5 VPN client and ULiège/Microsoft browser authentication. Its menu-bar icon
-turns colorful when the ULiège full tunnel is connected and monochrome when
-disconnected. **This is an independent community prototype, not supported or
-endorsed by ULiège, Microsoft, or F5.**
+Native menu bar controls for [gof5](https://github.com/kayrus/gof5) and
+ULiège/Microsoft browser authentication. This is an independent community
+prototype, not endorsed by ULiège, Microsoft, or F5. Read [SECURITY.md](SECURITY.md)
+and [BRANDING.md](BRANDING.md) before sharing a build.
 
-> **v0.5.0 preview — do not publicly promote yet.** The root helper has not
-> been independently reviewed. The source includes ULiège-derived art requiring
-> branding permission before public redistribution. Read
-> [SECURITY.md](SECURITY.md) and [BRANDING.md](BRANDING.md).
+## Connection behavior
 
-## For a colleague testing the unsigned DMG
+A running VPN is never stopped because a route, DNS check, or status request
+fails. Only an explicit Disconnect action stops it. The app reports:
 
-The DMG contains an app for one CPU architecture (Apple Silicon or Intel).
-No `uv`, Homebrew, `oathtool`, Python, or developer tools are needed to run
-this preview. Google Chrome is still needed for SSO.
+| Status | Evidence | Indicator |
+| --- | --- | --- |
+| Connected · IPv4 routes detected | University DNS and three sampled IPv4 destinations use the same utun interface | Green |
+| Connected · University route detected | University DNS address routes through a utun interface | Green |
+| VPN running · Unverified | gof5 is running; routing checks are inconclusive | Orange |
+| VPN status unavailable | Helper failed, timed out, or returned an unknown response | Orange; Disconnect available |
+| Disconnected | Helper explicitly reports STOPPED | Gray |
 
-1. Drag **ULiege VPN.app** into `/Applications` and open it. This prototype is
-   **not notarized**. macOS may require **System Settings → Privacy & Security
-   → Open Anyway** after you verify the downloaded source.
-2. Click the menu-bar icon and **Install VPN Support…**. This launches an
-   explicit one-time installer in Terminal; it requires admin authorization.
-   It installs a root-owned copy of gof5 and a *restricted, passwordless*
-   sudoers rule for the VPN helper. **This is a security caveat, not a
-   completely seamless or hardened privileged helper.**
-3. Click **Refresh status** and enter *your own* university email.
-4. Click **Connect** and sign in using your normal ULiège/Microsoft MFA method.
-   Your session is cached in your own macOS Keychain when possible.
+These are local routing hints. Another VPN can own a utun interface. They do
+not prove cluster reachability, IPv6 coverage, or that all internet traffic is
+private. Cached sessions are retried only after gof5 explicitly exits; an
+unverified running process is preserved. Checks use bounded commands and a
+monotonic startup deadline. Stale polling results cannot overwrite a newer
+Connect/Disconnect operation.
 
-Never copy someone else's TOTP secret or session cookie. Automatic TOTP
-sign-in is optional; it stores that person's own university password and
-TOTP seed in their user Keychain, which weakens multi-factor separation if
-that Mac is compromised. Normal browser sign-in is recommended for testers.
+## Install a preview
 
-**Uninstall:** Run `uninstall-helper.sh` from a trusted source checkout or the
-app's `Contents/Resources/Support` directory, then remove the app. This does
-not revoke the MFA enrollment or clear every browser/Keychain credential.
+1. Use the DMG for your Mac's architecture. Drag the app into Applications,
+   eject the disk image, and open the app.
+2. If Gatekeeper blocks this unsigned preview, verify its provenance and use
+   System Settings → Privacy & Security → Open Anyway. Never disable Gatekeeper.
+3. On a fresh Mac, use **Install VPN Support…** and review the Terminal prompt.
+   This requires explicit administrator approval and installs restricted,
+   passwordless helper commands. Any process in your user account can invoke
+   these commands. Touch ID in the app is confirmation only.
+4. Enter your own university email and identifier. Install Google Chrome if
+   prompted, then finish setup. Browser sign-in is the new-user default.
+5. Connect using your normal university MFA. Optional automatic TOTP setup is
+   available in Settings and uses only your own password and enrollment seed.
 
-## What changed in v0.5
+Onboarding stays visible while typing. The menu can scroll on smaller screens.
+Disconnect remains enabled when email is blank or Chrome is unavailable.
 
-- Bundles a gof5 executable for the target Mac architecture, with Apache-2.0
-  license attribution. No Homebrew install is needed by the DMG user.
-- Adds a visible first-run **Install VPN Support…** action when the helper is
-  missing, instead of sending new users to a README for a shell command.
-- Adds [`Packaging/create-dmg.sh`](Packaging/create-dmg.sh) for an unsigned DMG
-  with a drag-to-Applications shortcut.
-- Builds Apple Silicon and Intel previews on GitHub Actions. CI artifacts are
-  produced without automatically publishing a public release.
-- Tagging a version generates a GitHub **DRAFT** Release containing two
-  preview DMGs; only the maintainer can choose to publish the draft.
-- Adds privacy, supply-chain, publishing, and third-party licensing notes.
+### Upgrading an existing installation
 
-**Inherited from v0.4.2:** F5 session handoff through a private process pipe,
-nonfatal Keychain cache failures, browser MFA fallback, optional locally
-configured TOTP, connection-state probing, and Touch ID as optional UI
-confirmation (not a privilege boundary).
+The new app can use the previous fixed helper API for the connection fix.
+**The helper security fixes take effect only after separately updating VPN
+support.** Finish your current session and disconnect it yourself before
+using **Settings → Update VPN Support…** or running the new `install-helper.sh`. The installer refuses a running or
+unknown session; it never disconnects one to perform an upgrade. Existing
+Keychain entries and browser profiles are preserved.
 
-## For developers: build without overwriting an installed app
+The new helper requires this project's patched gof5 v0.1.5 binary. It uses an
+explicit root-owned config directory and a private pipe for the session.
+Stock gof5 is rejected. See [ThirdParty/README.md](ThirdParty/README.md).
 
-Build requires macOS 13+, Xcode Command Line Tools, Python 3.11–3.13 + pip,
-and gof5 at build time (`brew install gof5`). Python dependencies are installed
-in a local build-only environment by the script. The result is built for the
-CPU architecture of the builder.
+## Build and verify locally
+
+Requirements: macOS 13.5+, Xcode Command Line Tools, Python 3.11–3.13, and Go
+1.24 or newer (this preview was built with Go 1.27.1). Google Chrome is needed
+for sign-in and local browser fixture tests. End users of a prebuilt app need
+none of the build tools.
 
 ```sh
-python3 -m unittest discover -s tests -v
-INSTALL_APP=0 ./build.sh
+./tests/run-native-tests.sh
+./build.sh
+ULIEGE_TEST_CHROMIUM='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+  build/.build-venv/bin/python -m unittest discover -s tests -v
 ./Packaging/create-dmg.sh
-ls -lh dist/*.dmg
 ```
 
-`INSTALL_APP=0` preserves your existing `~/Applications/ULiege VPN.app`.
-Without it, `build.sh` installs the built copy to `~/Applications` for local
-testing (same behavior as earlier versions). **Building does not run the
-privileged support installer.** The `build.sh` default is preserved for users
-already developing against this repository.
+Builds default to **not installing**. The result is `build/ULiege VPN.app`, with a clean signed archive at
+`build/ULiegeVPN.app.zip`; `dist/` contains the DMG and portable SHA-256 checksum. `INSTALL_APP=1 ./build.sh`
+explicitly installs to `~/Applications`. Building never installs privileged
+support or contacts university authentication services. `setup.command` is an
+explicit install flow, including administrator authorization.
 
-For source installs on a fresh machine, `./setup.command` remains available
-as an experimental guided Terminal workflow. Public DMG testers should not
-need it.
+The pinned gof5 source and local hardening patch are built as the normal user.
+The frozen Python runtime bundles Playwright and Keychain support. Go module
+checksums are verified and the four main Python build dependencies are pinned.
+Transitive Python dependencies are not yet fully locked; builds are not claimed
+bit-for-bit reproducible. The build checks every bundled Mach-O library's minimum
+OS requirement and rejects runtimes exceeding macOS 13.5. A Homebrew Python may
+link to libraries requiring the builder's latest macOS; use `PYTHON=/path/to/a/compatible/python3.13`
+if this check fails. An optional build-only portable Python can be downloaded
+inside this checkout with `uv python install --install-dir build/python-runtime --no-bin 3.13`.
+The build discovers that local runtime automatically. uv is never required by the
+packaged app. Signing and DMG assembly use private temporary storage so workspace
+file providers cannot inject Finder metadata into the canonical archive.
 
-## Publishing to GitHub
+## French and English authentication
 
-See [PUBLISHING.md](PUBLISHING.md) for the review checklist, creating the repo,
-and preparing an unsigned **draft** release. The GitHub Actions macOS runners
-for public repos can build both Apple Silicon and Intel variants; no Apple
-Developer subscription is required to build an **unsigned** disk image.
+Both languages are supported across ULiège provider selection, local password
+forms, Microsoft account selection, passwordless alternatives, verification
+codes, stay-signed-in questions, and F5 inspection choices. Matching tolerates
+accents, apostrophes and whitespace, but requires the entire action label.
+Account selection requires the configured email exactly. Credentials are only
+entered on HTTPS ULiège/Microsoft hosts with proper domain boundaries.
 
-Do **not** publish this as a hardened or trusted VPN client until the
-privileged helper and credential-handling issues in [SECURITY.md](SECURITY.md)
-have been reviewed. The lack of notarization also requires manual Gatekeeper
-approval on user machines. A paid Developer ID isn't required to open-source
-or test the source.
+Manual and automatic sign-in share F5 completion detection. An early session
+cookie or SAML ACS page alone is not success. A `/my.policy` landing must follow
+an observed inspection choice that disappears and a stable cookie. Unknown
+pages may still need manual browser sign-in. This preview has local fixture
+coverage; live tenant authentication still requires testing by the account owner.
 
-## Privacy and third-party licenses
+## Releases
 
-See [PRIVACY.md](PRIVACY.md), [ThirdParty/README.md](ThirdParty/README.md), and
-[BRANDING.md](BRANDING.md). Project-owned code is MIT-licensed; gof5 is
-Apache-2.0-licensed. ULiège's marks are **not** licensed by the MIT license.
+GitHub checks build separate Apple Silicon and Intel unsigned previews. Tags
+must match the app version. The release workflow verifies both architectures'
+checksums and creates a **draft prerelease**. Publishing remains a manual
+maintainer decision. See [PUBLISHING.md](PUBLISHING.md), [RELEASE_NOTES.md](RELEASE_NOTES.md),
+and [VALIDATION.md](VALIDATION.md).
 
-## Troubleshooting
+## Privacy and removal
 
-- **App doesn't show an icon:** It is menu-bar-only (`LSUIElement`), so check
-  the right side of the macOS menu bar. `pgrep -fl ULiegeVPN` confirms whether
-  the app process is running.
-- **VPN support missing:** use *Install VPN Support…* once and *Refresh status*.
-- **Authentication completes but VPN doesn't connect:** test the helper status,
-  check for a `utun` route and university DNS, and open a private bug report
-  without cookies, MFA codes, or authentication URLs.
-- **Intel vs ARM:** use the correct DMG for your Mac. A DMG's filename specifies
-  architecture. Neither DMG is universal.
-- **Security prompt:** don't disable Gatekeeper globally; verify the build and
-  use the normal *Open Anyway* process if you trust the source.
+No real credentials, browser profiles, cookies, or auth traces belong in Git.
+The app caches sessions in the user's Keychain. Optional automatic login stores
+a password and MFA seed together on this Mac. See [PRIVACY.md](PRIVACY.md).
 
-
-### French authentication (v0.5.2)
-
-Automatic sign-in recognizes French and English variants of ULiège's choice
-pages, Microsoft MFA screens, and F5 endpoint inspection. If your tenant
-shows an unfamiliar button, use **Debug sign-in in browser** and report the
-button wording (never send passwords, TOTP secrets, or cookies).
+`uninstall-helper.sh` explicitly disconnects before removing helper support and
+refuses removal if stopping fails. It preserves Keychain entries and browser
+profiles. Remove the app separately. Project-owned code is MIT licensed; gof5 is
+Apache-2.0 licensed. University branding is not covered by those licenses.

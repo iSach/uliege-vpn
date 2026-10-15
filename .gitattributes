@@ -1,0 +1,2 @@
+# Unified patch context intentionally starts with a space followed by Go tabs.
+ThirdParty/*.patch -whitespace

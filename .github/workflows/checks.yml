@@ -30,14 +30,17 @@ jobs:
         run: |
           set -euo pipefail
           for f in build.sh setup.command install-helper.sh uninstall-helper.sh \
-            Helper/helper.sh Packaging/create-dmg.sh 'Packaging/Install VPN Support.command'; do
+            Helper/helper.sh Helper/install-root.sh Scripts/build-gof5.sh tests/run-native-tests.sh Packaging/create-dmg.sh 'Packaging/Install VPN Support.command'; do
             bash -n "$f"
           done
           python3 -m compileall -q Scripts
           python3 -m unittest discover -s tests -v
+          ./tests/run-native-tests.sh
           test "$(uname -m)" = '${{ matrix.arch }}'
-      - name: Install gof5 build-time dependency
-        run: brew install gof5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: false
       - name: Build app without overwriting user installations
         run: INSTALL_APP=0 ./build.sh
       - name: Check app bundle and unsigned signature
@@ -52,6 +55,11 @@ jobs:
           # Warning: an ad-hoc signature does NOT confer developer identity.
       - name: Build unsigned preview DMG
         run: ./Packaging/create-dmg.sh
+      - name: Local browser authentication fixtures
+        shell: bash
+        run: |
+          build/.build-venv/bin/python -m playwright install chromium
+          ULIEGE_REQUIRE_BROWSER_TESTS=1 build/.build-venv/bin/python -m unittest discover -s tests -v
       - uses: actions/upload-artifact@v4
         with:
           name: unsigned-preview-${{ matrix.arch }}

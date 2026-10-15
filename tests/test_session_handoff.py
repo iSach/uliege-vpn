@@ -22,7 +22,7 @@ class SessionHandoffTests(unittest.TestCase):
         self.assertIn("try SessionStore.save(fresh)", SWIFT)
     def test_store_failure_nonfatal(self):
         self.assertIn("Connection must work even if Keychain access is denied.", SWIFT)
-        self.assertIn("Connected · Session couldn't be saved for reuse", SWIFT)
+        self.assertIn("Session couldn't be saved for reuse", SWIFT)
     def test_python_parses(self):
         for file in (ROOT / "Scripts").glob("*.py"):
             ast.parse(file.read_text())

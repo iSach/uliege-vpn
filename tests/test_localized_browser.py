@@ -20,8 +20,7 @@ class LocalizedButtonBrowserTests(unittest.TestCase):
         except ImportError:
             raise unittest.SkipTest("Playwright not installed")
         executable = os.environ.get("ULIEGE_TEST_CHROMIUM") or shutil.which("chromium") or shutil.which("chromium-browser")
-        if not executable:
-            raise unittest.SkipTest("No local Chromium executable")
+
         # Only in test process; avoids the macOS Keychain backend dependency.
         if "keyring" not in sys.modules:
             sys.modules["keyring"] = types.ModuleType("keyring")
@@ -30,9 +29,11 @@ class LocalizedButtonBrowserTests(unittest.TestCase):
         cls.auth = automatic_auth
         cls.pw = sync_playwright().start()
         try:
-            cls.browser = cls.pw.chromium.launch(executable_path=executable, headless=True)
+            cls.browser = cls.pw.chromium.launch(**({"executable_path": executable} if executable else {}), headless=True)
         except Exception as e:
             cls.pw.stop()
+            if os.environ.get("ULIEGE_REQUIRE_BROWSER_TESTS") == "1":
+                raise
             raise unittest.SkipTest(f"Chromium unavailable: {type(e).__name__}")
 
     @classmethod
@@ -85,6 +86,17 @@ class LocalizedButtonBrowserTests(unittest.TestCase):
 
     def test_accents_and_case_in_control_labels(self):
         self.check_click("AUTHENTIFICATION FORTE MICROSOFT", self.auth.ULIEGE_MICROSOFT_CHOICES)
+
+    def test_similar_label_is_not_clicked(self):
+        self.page.set_content('<button onclick="window.selected=1">Ne pas utiliser votre mot de passe</button>')
+        self.assertIsNone(self.auth.click_any(self.page.main_frame, self.auth.MS_PASSWORD_INSTEAD))
+        self.assertIsNone(self.page.evaluate("window.selected"))
+
+    def test_saved_account_requires_exact_email(self):
+        self.page.set_content('''<button onclick="window.selected='wrong'">xstudent@example.test</button>
+            <button onclick="window.selected='correct'">student@example.test</button>''')
+        self.assertTrue(self.auth.click_saved_account(self.page.main_frame, "student@example.test"))
+        self.assertEqual(self.page.evaluate("window.selected"), "correct")
 
     def test_french_stay_signed_in_scope(self):
         self.page.set_content('<div>Voulez-vous rester connecté ?</div><button>Oui</button>')

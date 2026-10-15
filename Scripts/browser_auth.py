@@ -12,15 +12,14 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import keyring
+from automatic_auth import F5Completion
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
 PORTAL = "https://vpn.uliege.be/mfa"
 PROFILE = Path.home() / ".config/uliege-vpn/interactive-browser"
 SERVICE = "uliege-vpn-MRHSession"
-F5_HOSTS = {"vpn.uliege.be", "vpn-2fa.uliege.be"}
 
 
 def main(emit_session: bool = False) -> int:
@@ -31,7 +30,7 @@ def main(emit_session: bool = False) -> int:
             context = browser.chromium.launch_persistent_context(
                 str(PROFILE), channel="chrome", headless=False
             )
-        except PlaywrightError as exc:
+        except PlaywrightError:
             print("Could not open Google Chrome. Install Chrome first.", file=sys.stderr)
             return 1
         try:
@@ -45,24 +44,12 @@ def main(emit_session: bool = False) -> int:
             print("Sign in to ULiège in the Chrome window with your own account.", flush=True)
             print("Use your existing Authenticator approval or another allowed MFA method.", flush=True)
             print("If F5 offers endpoint inspection, choose the university-permitted option.", flush=True)
+            completion = F5Completion()
             deadline = time.monotonic() + 420
             while time.monotonic() < deadline:
                 try:
-                    cookies = context.cookies([
-                        "https://vpn.uliege.be", "https://vpn-2fa.uliege.be"
-                    ])
-                    session = next((c["value"] for c in cookies
-                                    if c["name"] == "MRHSession" and c["value"]), None)
-                    authenticated = False
-                    for page in context.pages:
-                        if page.is_closed(): continue
-                        for frame in page.frames:
-                            url = urlsplit(frame.url)
-                            if url.hostname in F5_HOSTS and url.path.startswith("/vdesk"):
-                                authenticated = True
-                                break
-                        if authenticated: break
-                    if session and authenticated:
+                    session = completion.observe(context)
+                    if session:
                         if emit_session:
                             # Only the parent macOS app reads this private pipe.
                             # Never display, log, or persist this output.

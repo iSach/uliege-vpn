@@ -1,72 +1,51 @@
-# GitHub publication and unsigned DMG checklist
+# Prepare the v0.5.3 GitHub preview
 
-These commands do NOT publish for you. Inspect all sources first, especially
-`Helper/`, `install-helper.sh`, `Scripts/`, and `ThirdParty/`.
+Local builds do not publish, install privileged support, or replace the installed
+app. `./build.sh` defaults to INSTALL_APP=0. See SECURITY.md for remaining limits.
 
-## Prepare repository
-
-- Decide a repository name (e.g. `uliege-vpn-macos`).
-- Confirm you have the right to redistribute the ULiège-derived logo, or
-  replace it with an original non-infringing icon before making the repo public.
-- Inspect `.gitignore`; do **not** commit session cookies, credentials, real
-  authentication traces, build output, or Keychain exports.
-- Verify that the private login workflow works with normal browser sign-in,
-  not just your particular automatic TOTP configuration.
-- Consider whether to make the *source repository* public while withholding
-  releases until the privileged helper receives security review.
+## Review and build
 
 ```sh
-cd /path/to/ULiegeVPNMenuBar-v0.5-preview
-python3 -m unittest discover -s tests -v
-git init
-git add .
-git status --short
-git commit -m 'Initial unsigned macOS preview source'
-# Review GitHub account and content; start PRIVATE during testing:
-gh repo create uliege-vpn-macos --private --source=. --push
-```
-
-## Test builds without installing on your Mac
-
-On Apple Silicon or Intel macOS, with build requirements installed:
-
-```sh
-INSTALL_APP=0 ./build.sh
+./tests/run-native-tests.sh
+./build.sh
+ULIEGE_TEST_CHROMIUM='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+  build/.build-venv/bin/python -m unittest discover -s tests -v
 ./Packaging/create-dmg.sh
+(cd dist && shasum -a 256 -c *.sha256)
+git diff --check
+git status --short
 ```
 
-The DMG will be in `dist/`, named with the app version and CPU architecture.
-The CI workflow builds BOTH platforms on GitHub-hosted macOS machines. It
-uploads unsigned images as Actions artifacts, not as public releases.
+The local output is architecture-specific. CI also builds and tests Intel.
+Do not claim a local Apple Silicon build validates Intel execution or live MFA.
+Never commit credentials, profiles, session cookies, build products or raw logs.
 
-## Make a reviewable DRAFT release
+## Source branch and draft release
 
-Only after building successfully and testing on real Macs:
+Review the complete source diff and VALIDATION.md. Preserve existing Git history;
+this update does not require a force push. Push the reviewed feature branch and
+merge it through your normal review process. Before tagging, confirm the remote
+branch points to the exact reviewed commit and both architecture jobs passed.
 
-```sh
-git tag v0.5.0-preview.1
-git push origin v0.5.0-preview.1
-```
+The release workflow accepts only a tag matching CFBundleShortVersionString,
+currently **v0.5.3**. After maintainer authorization, create and push that tag on
+the reviewed commit. The workflow builds two DMGs, verifies portable checksums,
+and creates a **draft prerelease** using RELEASE_NOTES.md. It never publishes
+that draft automatically. A manual branch dispatch builds review artifacts only.
 
-The `draft-release.yml` workflow creates a **DRAFT** GitHub Release with both
-DMGs. It is not visible as a public release until you choose *Publish release*.
-Do not publish until you have reviewed the security caveats and logo licensing.
+A public release needs separate explicit approval. Before publishing, finish
+live/privileged tests and review signing, university branding and the remaining
+sudoers security model. No automatic release or helper update is performed by
+the app. Do not replace an old release asset under the same version number.
 
-## Gatekeeper and trust
+## Unsigned preview trust
 
-Without an Apple Developer ID membership, builds are ad-hoc signed, **not**
-notarized, and may be blocked by Gatekeeper. Testers may use macOS **System
-Settings → Privacy & Security → Open Anyway** after verifying the source.
-Never tell testers to disable Gatekeeper globally or run a blanket
-`xattr -rd com.apple.quarantine` on downloaded code.
+Ad-hoc signatures detect some bundle changes but do not identify a publisher.
+The app is not notarized. Give testers the correct architecture and checksum,
+and include INSTALLING.md and SECURITY.md. Users may choose the normal macOS
+Privacy & Security → Open Anyway path after verifying the source. Never advise
+disabling Gatekeeper globally.
 
-## Important release blockers
-
-- The experimental helper still relies on sudoers NOPASSWD. No independent
-  security audit has been conducted. Consider a narrower authorization model
-  or explicit admin authorization per connection for public use.
-- The root gof5 CLI receives an F5 cookie through process arguments.
-- University-owned branding is not licensed by this project's MIT license.
-- Review bundled dependencies, code signing, supply chain provenance, and
-  university rules before broad release.
-- The unsigned DMG is not a one-click **security-reviewed** distribution.
+The runner labels are checked against GitHub's [hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+Local signing uses temporary storage and packaging reads the clean signed ZIP,
+so file-provider Finder metadata in a display copy cannot corrupt the DMG.

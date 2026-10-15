@@ -1,21 +1,28 @@
-ULiège VPN for macOS — UNSIGNED PREVIEW
+ULiège VPN v0.5.3 — UNOFFICIAL UNSIGNED PREVIEW
 
-Not an official ULiège app. This is a test build and its privileged helper has
-NOT undergone independent security review. Do not install on managed devices
-without your IT team's approval.
+1. Drag ULiege VPN.app into Applications. Eject the disk image, then open the app.
+2. This app is not notarized. If blocked, verify the source and checksum before
+   using System Settings > Privacy & Security > Open Anyway. Keep Gatekeeper on.
+3. On a fresh Mac, open the menu bar and select Install VPN Support. Review the
+   Terminal prompt before typing INSTALL and approving administrator access.
+   The helper grants limited passwordless start/stop/status commands to your
+   account. Read SECURITY.md included on this disk before approving.
+4. Enter your own university email and identifier. Install Google Chrome if
+   prompted, finish setup, then connect using normal browser MFA.
 
-1. Drag "ULiege VPN.app" into Applications. Do not run it from this disk image.
-2. Open the app. If macOS blocks it, use System Settings > Privacy & Security
-   > Open Anyway (ONLY after verifying you trust the source).
-3. Open the menu bar icon, select "Install VPN Support…", and approve the
-   one-time helper installation in Terminal. This installs root-owned gof5 and
-   a LIMITED BUT PASSWORDLESS sudoers rule. See SECURITY.md in the source repo.
-4. Enter YOUR OWN university email, choose browser sign-in, and connect.
-   Optional unattended TOTP enrollment is available under Settings; never share
-   a seed or account password with another person.
+The app requires macOS 13.5 or newer and Chrome for sign-in, but no Homebrew, Go, Python, uv or oathtool
+at runtime. Use the DMG matching Apple Silicon (arm64) or Intel (x86_64).
+Automatic TOTP sign-in is optional and uses your own password and MFA seed.
 
-The app needs Google Chrome for ULiège login. It does not need Homebrew, uv,
-Python, or oathtool at runtime. Apple Silicon and Intel DMGs are separate.
+UPGRADING: The app-side connection fix works with the previous helper API. The
+new helper security protections require a separate support update from the new
+app's Settings > Update VPN Support action. Finish and disconnect your
+current session yourself before running that installer. It refuses to replace
+a running or unknown session. Keychain entries and browser profiles are kept.
 
-Before public use: review the privileged-helper design, university branding
-permissions, and university VPN/MFA rules. The app is not notarized.
+Routing and DNS checks never automatically stop gof5. Orange means running but
+unverified, or status unavailable; Disconnect remains available. Green routing
+hints do not prove IPv6 coverage, privacy of every connection, or reachability.
+
+This helper has not been independently audited. Live sign-in, clean installs,
+upgrades, Intel execution and managed-device policies require further testing.
