@@ -738,14 +738,34 @@ private struct MenuContent: View {
 private struct SessionReuseSettings: View {
     @ObservedObject var model: VPNModel
 
+    private var reuseDuration: String {
+        model.sessionReuseMinutes == 0 ? "Always fresh" :
+            "Up to " + SessionReusePolicy.ageDescription(TimeInterval(model.sessionReuseMinutes) * 60)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Stepper(value: $model.sessionReuseMinutes, in: 0...SessionReusePolicy.maximumMinutes, step: 15) {
-                Text(model.sessionReuseMinutes == 0 ? "Always use fresh sign-in" :
-                    "Reuse for up to " + SessionReusePolicy.ageDescription(TimeInterval(model.sessionReuseMinutes) * 60))
-                    .font(.caption)
+            HStack {
+                Text("Reuse saved sign-in")
+                Spacer()
+                Text(reuseDuration).monospacedDigit().foregroundStyle(.secondary)
             }
+            .font(.caption)
+            Slider(value: Binding(
+                get: { Double(model.sessionReuseMinutes) },
+                set: { model.sessionReuseMinutes = Int($0.rounded()) }
+            ), in: 0...Double(SessionReusePolicy.maximumMinutes), step: 15) {
+                Text("Maximum saved sign-in age")
+            }
+            .labelsHidden()
+            .accessibilityValue(reuseDuration)
             .disabled(model.working)
+            HStack {
+                Text("Always fresh")
+                Spacer()
+                Text("24 hours")
+            }
+            .font(.caption2).foregroundStyle(.secondary)
             Text("0 means always sign in. This limit applies only on reconnect and never stops an active VPN. It is not the university's expiry time.")
                 .font(.caption2).foregroundStyle(.secondary)
             Button("Sign in again without saved session") { model.connect(forceFresh: true) }

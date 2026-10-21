@@ -5,6 +5,14 @@ configurable maximum reuse age, one saved-session check, fresh-sign-in fallback,
 a bypass action, and local acceptance/rejection/unknown observations. It does
 not modify or require installing a new privileged helper.
 
+Build **55** replaces the reuse-time stepper with a slider and a live duration
+label. Its range remains 0–24 hours in 15-minute steps. This UI-only revision
+passed arm64/x86_64 warnings-as-errors typechecking, an isolated native visual
+preview and an optimized arm64 rebuild. The rebuilt DMG passed checksum and
+read-only strict signature, version/plist and native archive comparisons.
+Installed application/helper hashes remain unchanged. The functional suites
+listed below were completed before this UI revision and were not rerun.
+
 ## Current checks
 
 - **112 native assertions**: 93 session-cache/HTTP/reconnect assertions plus the

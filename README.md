@@ -28,7 +28,7 @@ Connect/Disconnect operation.
 ## Saved sign-in reuse (v0.5.4)
 
 Saved F5 cookies are reused for at most **one hour by default**, measured from
-when fresh authentication returned the cookie. In Settings, adjust the window
+when fresh authentication returned the cookie. In Settings, drag the time slider
 in 15-minute steps up to 24 hours, or choose zero to always sign in fresh.
 **Sign in again without saved session** bypasses the cache for one connection.
 Neither the limit nor that action ever stops a running/unknown VPN session.
