@@ -1,3 +1,36 @@
+# v0.5.4 menu bar improvements, build 56 — 21 October 2026
+
+The working repository is now `~/Development/uliege-vpn`, tracking GitHub
+`master`. Build 56 adds right-click/Control-click Quit, optional macOS launch
+at login, a popup that fits visible content, and a tick-free time slider.
+
+- **140 native assertions pass**: the existing 112 health/cache assertions and
+  28 native UI/login-item assertions. The latter exercise real AppKit sliders,
+  mouse-action delivery, keyboard and accessibility steps, disabled controls,
+  SwiftUI disclosure expansion/collapse, and native window resizing. Login-item
+  success, pending approval, failures and external changes use injected service
+  operations; tests never register a real login item.
+- Full sources typecheck for arm64 and x86_64 with warnings as errors. Five
+  packaging regression tests and shell/whitespace checks pass.
+- A synthetic instance of the actual menu renders at **283 pt** with Settings
+  collapsed, **720 pt** expanded, then returns to 283 pt. Screenshots confirm
+  the visible login option and slider without tick marks. Long content scrolls.
+- Optimized arm64 native rebuild, strict bundle signature, DMG checksum,
+  read-only mounted signature/plist and native archive comparisons pass. The
+  existing, already-built Python/Go runtime is retained unchanged.
+- Installed and launched build 56 in `~/Applications`; build 55 is backed up
+  in `~/Applications/ULiege VPN Backups`. The existing VPN PID and launch time,
+  privileged helper/runtime hashes and separate `/Applications` copy are
+  unchanged. No login item was registered and no privileged update was made.
+- GitHub's prior DMG failure came from the argument order accepted by older
+  Apple `lipo`. Packaging now passes the input file before `-verify_arch`.
+
+Real login/logout execution and macOS login-item approval remain manual checks.
+Native UI automation could not read this accessory app's accessibility tree;
+the local UI evidence above comes from isolated native fixtures.
+
+---
+
 # v0.5.4 saved-session validation — 21 October 2026
 
 Implemented on top of local commit `af715d4`. This update adds a one-hour
@@ -66,10 +99,10 @@ the same lifetime is guaranteed next time. A client age cutoff is not recorded
 as server rejection. Only attempted reuses are measured; there are no background
 probes and there is no automatic adjustment of the configured limit.
 
-The installed app and privileged executable hashes are compared against the
-start of this update. No installed application, helper, sudoers rule, Keychain
-entry, browser profile, route or DNS configuration is changed by this work.
-No branch or release is uploaded. Live university sign-in/profile responses,
+During the initial cache implementation, installed app and privileged executable
+hashes were unchanged; builds/tests did not modify credentials, browser profiles,
+routes or DNS. Later source publication and app installation are documented
+above. No public release or privileged installation was performed. Live university sign-in/profile responses,
 server-side expiry, real Keychain permissions, Intel execution and older macOS
 execution still need account-owner testing. Earlier security/release caveats
 continue to apply.

@@ -1,5 +1,13 @@
 # ULiège VPN v0.5.4 — saved sign-in lifetime controls
 
+Build 56 also adds a right-click/Control-click Quit menu and an optional
+Launch at login setting backed by macOS login items. The popup grows and
+shrinks with its content, with scrolling for long settings. The duration
+slider has no tick marks and retains its 15-minute mouse, keyboard and
+accessibility steps. Quitting the app keeps an existing tunnel running.
+Packaging now uses an architecture-check argument order supported by older
+Apple build tools on GitHub's Mac runners.
+
 Next-day reconnects no longer blindly try an undated or indefinitely cached
 cookie. The default reuse window is one hour, configurable in Settings from
 zero (always fresh sign-in) to 24 hours. A separate action bypasses saved

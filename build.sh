@@ -106,7 +106,7 @@ done
 xcrun swiftc -parse-as-library -swift-version 5 -O \
     -target "${ARCH}-apple-macosx13.0" \
     -framework AppKit -framework SwiftUI \
-    -framework LocalAuthentication -framework Security -framework CryptoKit \
+    -framework LocalAuthentication -framework Security -framework CryptoKit -framework ServiceManagement \
     "$HERE"/Sources/*.swift \
     -o "$APP/Contents/MacOS/ULiegeVPN"
 MINIMUM_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"

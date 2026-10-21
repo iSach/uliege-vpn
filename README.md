@@ -79,8 +79,17 @@ cookies deliberately. ULiège IT can confirm the configured limits.
 5. Connect using your normal university MFA. Optional automatic TOTP setup is
    available in Settings and uses only your own password and enrollment seed.
 
-Onboarding stays visible while typing. The menu can scroll on smaller screens.
-Disconnect remains enabled when email is blank or Chrome is unavailable.
+Left-click the menu bar icon to open the popup, or right-click/Control-click it
+for **Quit ULiège VPN**. Quitting the app keeps the VPN running. The popup fits
+its visible content and grows when Settings or session history expands; long
+content scrolls on smaller screens. The time slider has no dots or tick marks
+and retains 15-minute steps with mouse, keyboard and accessibility controls.
+
+**Settings → Launch at login** opts into [macOS login items](https://developer.apple.com/documentation/servicemanagement/smappservice/mainapp).
+Its state comes from macOS, including pending approval and changes made in
+System Settings. It opens the menu bar app without automatically connecting.
+Nothing is registered until you enable it. Onboarding stays visible while
+typing, and Disconnect remains enabled when email is blank or Chrome is unavailable.
 
 ### Upgrading an existing installation
 

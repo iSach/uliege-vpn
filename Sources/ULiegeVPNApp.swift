@@ -529,6 +529,8 @@ final class VPNStatusBarDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover?
     private var model: VPNModel?
     private var observation: AnyCancellable?
+    private let loginItem = LoginItemSettings()
+    private let sizing = PopoverSizing()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -542,8 +544,14 @@ final class VPNStatusBarDelegate: NSObject, NSApplicationDelegate {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 350, height: 650)
-        popover.contentViewController = NSHostingController(rootView: MenuContent(model: model))
+        sizing.updateScreen(item.button?.window?.screen)
+        popover.contentSize = NSSize(width: PopoverSizing.width, height: sizing.height)
+        sizing.onResize = { [weak popover] size in popover?.contentSize = size }
+        popover.contentViewController = NSHostingController(rootView:
+            FittingPopoverContent(sizing: sizing) {
+                MenuContent(model: model, loginItem: loginItem)
+            }
+        )
         self.popover = popover
 
         if let button = item.button {
@@ -551,7 +559,7 @@ final class VPNStatusBarDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePopover(_:))
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyDown
-            button.sendAction(on: [.leftMouseUp])
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             updateIcon(connected: model.connected)
             NSLog("ULiegeVPN: menu bar status item created")
         } else {
@@ -583,13 +591,27 @@ final class VPNStatusBarDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func togglePopover(_ sender: Any?) {
         guard let button = item?.button, let popover else { return }
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            popover.performClose(sender)
+            let menu = NSMenu()
+            let quit = NSMenuItem(title: "Quit ULiège VPN", action: #selector(quitApp(_:)), keyEquivalent: "q")
+            quit.target = self
+            menu.addItem(quit)
+            NSMenu.popUpContextMenu(menu, with: event, for: button)
+            return
+        }
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            loginItem.refresh()
+            sizing.updateScreen(button.window?.screen)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
+
+    @objc private func quitApp(_ sender: Any?) { NSApp.terminate(sender) }
 }
 
 @main
@@ -604,128 +626,141 @@ struct ULiegeVPNApp: App {
 
 private struct MenuContent: View {
     @ObservedObject var model: VPNModel
+    @ObservedObject var loginItem: LoginItemSettings
     @State private var settingsOpen = false
     @State private var now = Date()
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Image(nsImage: BrandIcon.image(connected: true))
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 28, height: 30)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("ULiège VPN").font(.headline)
-                        Text("vpn-2fa.uliege.be").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Circle().fill(model.verified ? Color.green : (model.canDisconnect ? Color.orange : Color.gray)).frame(width: 9, height: 9)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(nsImage: BrandIcon.image(connected: true))
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 28, height: 30)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("ULiège VPN").font(.headline)
+                    Text("vpn-2fa.uliege.be").font(.caption).foregroundStyle(.secondary)
                 }
-                if !model.helperInstalled {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("One-time VPN support setup").font(.headline)
-                        Text("Install the bundled VPN network component before connecting. Administrator approval is required once.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Install VPN Support…") { model.openSupportInstaller() }
-                            .buttonStyle(.bordered)
-                        Text("Experimental installer: adds a restricted passwordless sudo permission. Read SECURITY.md before approving.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                if !onboardingCompleted || !model.emailConfigured {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Welcome · First-time setup").font(.headline)
-                        Text("Enter your own ULiège email and identifier. Browser sign-in works without any TOTP setup.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        TextField("Your university email", text: $model.universityEmail)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("ULiège identifier (e.g. s123456)", text: $model.universityUsername)
-                            .textFieldStyle(.roundedBorder)
-                        Text(model.chromeInstalled ? "Google Chrome is ready for browser sign-in." : "Install Google Chrome before your first sign-in.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if !model.chromeInstalled {
-                            Button("Get Google Chrome ↗") {
-                                NSWorkspace.shared.open(URL(string: "https://www.google.com/chrome/")!)
-                            }
-                        }
-                        Button("Finish setup") { onboardingCompleted = true }
-                            .disabled(!model.emailConfigured || !model.helperInstalled || !model.chromeInstalled)
-                    }
-                }
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(model.state.title).font(.title3.weight(.semibold))
-                        Text(model.detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if model.working { ProgressView().controlSize(.small) }
-                }
-                if model.connected, let since = model.since {
-                    Text("Connected for \(elapsed(since))")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                if case .error(let message) = model.state {
-                    Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-                }
-                Button {
-                    if model.canDisconnect { model.disconnect() }
-                    else { model.connect() }
-                } label: {
-                    Text(model.canDisconnect ? "Disconnect" : "Connect")
-                        .frame(maxWidth: .infinity).padding(.vertical, 4)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.working || (!model.canDisconnect && (!model.emailConfigured || !model.helperInstalled || !model.chromeInstalled)))
-                Divider()
-                DisclosureGroup("Settings", isExpanded: $settingsOpen) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        TextField("University email", text: $model.universityEmail)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("ULiège identifier (optional)", text: $model.universityUsername)
-                            .textFieldStyle(.roundedBorder)
-                        Toggle("Require Touch ID to connect", isOn: Binding(
-                            get: { model.requireTouchID },
-                            set: { model.setTouchIDRequired($0) }
-                        ))
-                        SessionReuseSettings(model: model)
-                        Toggle("Use browser sign-in (Authenticator or other MFA)", isOn: $model.preferInteractiveLogin)
-                        if !model.automaticLoginAvailable && !model.preferInteractiveLogin {
-                            Text("No local TOTP/password setup found. Browser sign-in will open automatically when required.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                        if model.helperNeedsUpdate {
-                            Text("VPN support update available. Disconnect before updating to apply the new helper protections.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Button("Update VPN Support…") { model.openSupportInstaller() }
-                            .disabled(model.working || model.canDisconnect)
-                        Button("Configure automatic TOTP sign-in…") { AutomaticSetupWindow.show(model: model) }
-                        if model.automaticLoginAvailable {
-                            Text("Automatic sign-in credentials found in this Mac’s Keychain.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Toggle("Show browser for automatic sign-in debugging", isOn: $model.showBrowser)
-                        Text("With browser sign-in, you use your own university account and approved MFA. No TOTP secret needs to be configured or shared. Touch ID is an app confirmation, not a protection enforced by the privileged helper.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }.padding(.top, 8)
-                }
-                HStack {
-                    Button("Refresh status") { model.refresh() }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Quit") { NSApplication.shared.terminate(nil) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                }.font(.caption)
+                Spacer()
+                Circle().fill(model.verified ? Color.green : (model.canDisconnect ? Color.orange : Color.gray)).frame(width: 9, height: 9)
             }
-            .padding(18)
+            if !model.helperInstalled {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("One-time VPN support setup").font(.headline)
+                    Text("Install the bundled VPN network component before connecting. Administrator approval is required once.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Install VPN Support…") { model.openSupportInstaller() }
+                        .buttonStyle(.bordered)
+                    Text("Experimental installer: adds a restricted passwordless sudo permission. Read SECURITY.md before approving.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            if !onboardingCompleted || !model.emailConfigured {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Welcome · First-time setup").font(.headline)
+                    Text("Enter your own ULiège email and identifier. Browser sign-in works without any TOTP setup.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Your university email", text: $model.universityEmail)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("ULiège identifier (e.g. s123456)", text: $model.universityUsername)
+                        .textFieldStyle(.roundedBorder)
+                    Text(model.chromeInstalled ? "Google Chrome is ready for browser sign-in." : "Install Google Chrome before your first sign-in.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !model.chromeInstalled {
+                        Button("Get Google Chrome ↗") {
+                            NSWorkspace.shared.open(URL(string: "https://www.google.com/chrome/")!)
+                        }
+                    }
+                    Button("Finish setup") { onboardingCompleted = true }
+                        .disabled(!model.emailConfigured || !model.helperInstalled || !model.chromeInstalled)
+                }
+            }
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.state.title).font(.title3.weight(.semibold))
+                    Text(model.detail).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.working { ProgressView().controlSize(.small) }
+            }
+            if model.connected, let since = model.since {
+                Text("Connected for \(elapsed(since))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if case .error(let message) = model.state {
+                Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+            Button {
+                if model.canDisconnect { model.disconnect() }
+                else { model.connect() }
+            } label: {
+                Text(model.canDisconnect ? "Disconnect" : "Connect")
+                    .frame(maxWidth: .infinity).padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.working || (!model.canDisconnect && (!model.emailConfigured || !model.helperInstalled || !model.chromeInstalled)))
+            Divider()
+            DisclosureGroup("Settings", isExpanded: $settingsOpen) {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("University email", text: $model.universityEmail)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("ULiège identifier (optional)", text: $model.universityUsername)
+                        .textFieldStyle(.roundedBorder)
+                    Toggle("Launch at login", isOn: Binding(
+                        get: { loginItem.isOn },
+                        set: { enabled in Task { await loginItem.setEnabled(enabled) } }
+                    ))
+                    .disabled(loginItem.changing)
+                    if loginItem.requiresApproval {
+                        Text("Allow ULiège VPN in macOS Login Items to finish enabling launch at login.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Button("Open Login Items…") { loginItem.openSystemSettings() }
+                    }
+                    if let message = loginItem.errorMessage {
+                        Text(message).font(.caption2).foregroundStyle(.red)
+                    }
+                    Toggle("Require Touch ID to connect", isOn: Binding(
+                        get: { model.requireTouchID },
+                        set: { model.setTouchIDRequired($0) }
+                    ))
+                    SessionReuseSettings(model: model)
+                    Toggle("Use browser sign-in (Authenticator or other MFA)", isOn: $model.preferInteractiveLogin)
+                    if !model.automaticLoginAvailable && !model.preferInteractiveLogin {
+                        Text("No local TOTP/password setup found. Browser sign-in will open automatically when required.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if model.helperNeedsUpdate {
+                        Text("VPN support update available. Disconnect before updating to apply the new helper protections.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Update VPN Support…") { model.openSupportInstaller() }
+                        .disabled(model.working || model.canDisconnect)
+                    Button("Configure automatic TOTP sign-in…") { AutomaticSetupWindow.show(model: model) }
+                    if model.automaticLoginAvailable {
+                        Text("Automatic sign-in credentials found in this Mac’s Keychain.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Toggle("Show browser for automatic sign-in debugging", isOn: $model.showBrowser)
+                    Text("With browser sign-in, you use your own university account and approved MFA. No TOTP secret needs to be configured or shared. Touch ID is an app confirmation, not a protection enforced by the privileged helper.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }.padding(.top, 8)
+            }
+            HStack {
+                Button("Refresh status") { model.refresh() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }.font(.caption)
         }
-        .frame(width: 350)
-        .frame(maxHeight: 720)
+        .padding(18)
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem.refresh()
+        }
     }
 
     private func elapsed(_ date: Date) -> String {
@@ -751,14 +786,8 @@ private struct SessionReuseSettings: View {
                 Text(reuseDuration).monospacedDigit().foregroundStyle(.secondary)
             }
             .font(.caption)
-            Slider(value: Binding(
-                get: { Double(model.sessionReuseMinutes) },
-                set: { model.sessionReuseMinutes = Int($0.rounded()) }
-            ), in: 0...Double(SessionReusePolicy.maximumMinutes), step: 15) {
-                Text("Maximum saved sign-in age")
-            }
-            .labelsHidden()
-            .accessibilityValue(reuseDuration)
+            SessionMinuteSlider(value: $model.sessionReuseMinutes)
+            .frame(height: 22)
             .disabled(model.working)
             HStack {
                 Text("Always fresh")

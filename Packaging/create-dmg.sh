@@ -18,7 +18,7 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid version.' >&2; exit 1; }
 /usr/bin/codesign --verify --deep --strict "$APP"
 for binary in "$APP/Contents/MacOS/ULiegeVPN" "$APP/Contents/Resources/AuthRuntime/uliege-auth" "$APP/Contents/Resources/VPNRuntime/gof5"; do
-    /usr/bin/lipo -verify_arch "$ARCH" "$binary"
+    /usr/bin/lipo "$binary" -verify_arch "$ARCH"
 done
 /bin/ln -s /Applications "$STAGING/Applications"
 /bin/cp "$HERE/INSTALLING.md" "$STAGING/READ ME FIRST.txt"
