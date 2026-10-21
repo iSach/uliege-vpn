@@ -38,9 +38,13 @@ fi
 
 # Bundle CPython, Playwright's driver, and the macOS Keychain backend using
 # PyInstaller. The finished app NEVER invokes uv, python, or pip at runtime.
-VENV="$HERE/build/.build-venv"
+VENV="${BUILD_VENV:-$HERE/build/.build-venv}"
 if [[ -x "$VENV/bin/python" ]] &&
    [[ "$("$VENV/bin/python" -c 'import sys; print(sys.base_prefix)')" != "$("$PYTHON" -c 'import sys; print(sys.base_prefix)')" ]]; then
+    [[ "$VENV" == "$HERE/build/.build-venv" ]] || {
+        echo 'BUILD_VENV uses another Python. Choose a fresh build environment directory.' >&2
+        exit 1
+    }
     /bin/rm -rf "$VENV"  # Only this checkout's disposable build environment.
 fi
 if [[ ! -x "$VENV/bin/python" ]]; then
@@ -103,7 +107,7 @@ xcrun swiftc -parse-as-library -swift-version 5 -O \
     -target "${ARCH}-apple-macosx13.0" \
     -framework AppKit -framework SwiftUI \
     -framework LocalAuthentication -framework Security -framework CryptoKit \
-    "$HERE/Sources/ULiegeVPNApp.swift" "$HERE/Sources/AutomaticSetup.swift" "$HERE/Sources/TunnelHealth.swift" \
+    "$HERE"/Sources/*.swift \
     -o "$APP/Contents/MacOS/ULiegeVPN"
 MINIMUM_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
 "$VENV/bin/python" "$HERE/Scripts/check-macos-runtime.py" "$APP" --maximum "$MINIMUM_MACOS" --output "$RES/build-info.json"

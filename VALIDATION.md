@@ -1,3 +1,73 @@
+# v0.5.4 saved-session validation — 21 October 2026
+
+Implemented on top of local commit `af715d4`. This update adds a one-hour
+configurable maximum reuse age, one saved-session check, fresh-sign-in fallback,
+a bypass action, and local acceptance/rejection/unknown observations. It does
+not modify or require installing a new privileged helper.
+
+## Current checks
+
+- **112 native assertions**: 93 session-cache/HTTP/reconnect assertions plus the
+  existing 19 tunnel-health assertions. These execute the actual reconnect
+  coordinator using synthetic session records and injected operations.
+- Coverage includes expired/unknown/future-dated cookies, exact age boundaries,
+  disabled caching, forced sign-in, account changes, retained acquisition time,
+  rejected-token invalidation even when Keychain deletion fails, network
+  failures, one-attempt fallback, concurrent/running/unavailable tunnel states,
+  cache-save failure, history retention and clearing, and credential-free
+  observation serialization.
+- The real URLSession validation path is tested through a local URLProtocol
+  fixture. There are no live F5 requests. It checks the fixed endpoint, no
+  redirect following, cross-host isolation, transport errors, token/header
+  validation, bounded response size, valid VPN XML, and DTD/alternate-encoding
+  rejection. Unfamiliar HTTP failures remain unknown.
+- **55 Python tests**, including all 12 real Chrome EN/FR fixtures, pass with no
+  skips. A fresh temporary Python environment was used after the old synced
+  build environment stalled; production authentication scripts are unchanged.
+- Native sources typecheck for arm64 and x86_64 with warnings treated as errors.
+  Intel execution remains untested. Shell/Python parsing and Git whitespace
+  checks pass.
+- Settings were rendered and visually checked using a synthetic, nonpolling
+  model. The preview never reads account credentials or real saved preferences.
+- A full arm64 build was completed from source using a portable Python 3.13.13
+  and a temporary BUILD_VENV outside the synced workspace. Both patched gof5
+  tests and module verification pass. Six bundled Mach-O slices meet the
+  declared macOS 13.5 minimum, and both frozen auth help/startup checks pass.
+  The final UTF8 parsing guard was then rebuilt into the native executable;
+  the unchanged Python/Go runtime from that full build was retained and the
+  complete bundle was signed and repackaged.
+- The final DMG passed image integrity and portable SHA-256 checks. Mounted
+  read-only, it passed recursive strict signature validation, both frozen auth
+  startup checks, version/build checks and byte comparisons of bundled helpers,
+  installer, plist, privacy and security documents against the working source.
+  Installed app and privileged executable hashes are unchanged.
+
+The v0.5.4 deliverable is `dist/ULiegeVPN-0.5.4-preview-arm64-UNSIGNED.dmg`, with
+its portable `.sha256` checksum. It is an ad-hoc-signed, unnotarized preview.
+The v0.5.3 DMG remains available separately. The canonical signed app archive is
+`build/ULiegeVPN.app.zip`; use it or the DMG rather than a file-provider-modified
+workspace display copy.
+
+## Live behavior and remaining validation
+
+The new app-v3 Keychain cache is separate from older undated entries, so the
+first connection obtains a fresh session. No-cache mode avoids the native F5
+cache; browser profiles may still retain valid Microsoft SSO cookies. A success
+observation means F5 accepted the cookie, not that a tunnel is verified or that
+the same lifetime is guaranteed next time. A client age cutoff is not recorded
+as server rejection. Only attempted reuses are measured; there are no background
+probes and there is no automatic adjustment of the configured limit.
+
+The installed app and privileged executable hashes are compared against the
+start of this update. No installed application, helper, sudoers rule, Keychain
+entry, browser profile, route or DNS configuration is changed by this work.
+No branch or release is uploaded. Live university sign-in/profile responses,
+server-side expiry, real Keychain permissions, Intel execution and older macOS
+execution still need account-owner testing. Earlier security/release caveats
+continue to apply.
+
+---
+
 # Local validation — 15 October 2026
 
 Work started from the user's clean v0.5.2 repository at commit

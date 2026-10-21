@@ -1,4 +1,4 @@
-# ULiège VPN for macOS · unofficial v0.5.3 preview
+# ULiège VPN for macOS · unofficial v0.5.4 preview
 
 Native menu bar controls for [gof5](https://github.com/kayrus/gof5) and
 ULiège/Microsoft browser authentication. This is an independent community
@@ -24,6 +24,45 @@ private. Cached sessions are retried only after gof5 explicitly exits; an
 unverified running process is preserved. Checks use bounded commands and a
 monotonic startup deadline. Stale polling results cannot overwrite a newer
 Connect/Disconnect operation.
+
+## Saved sign-in reuse (v0.5.4)
+
+Saved F5 cookies are reused for at most **one hour by default**, measured from
+when fresh authentication returned the cookie. In Settings, adjust the window
+in 15-minute steps up to 24 hours, or choose zero to always sign in fresh.
+**Sign in again without saved session** bypasses the cache for one connection.
+Neither the limit nor that action ever stops a running/unknown VPN session.
+
+A bounded, unprivileged check requests the same F5 VPN profile endpoint as gof5
+before starting a cached tunnel. A valid VPN profile is acceptance; recognized
+F5 login/logout redirects or the explicit session-expired page are rejection.
+Network errors, generic 401/403/5xx responses and unfamiliar pages are unknown,
+not evidence of expiration. Redirects are never followed and the cookie is
+never sent to another host. There is one saved-session check per Connect,
+followed by one fresh sign-in when necessary. A rejected cookie is invalidated;
+a failed Keychain delete cannot make it reusable again.
+
+The new dated cache uses its own `app-v3` Keychain service. Earlier undated v2
+entries are preserved and ignored, so the first v0.5.4 connection signs in
+fresh. Successful reuse never resets acquisition time. Changing accounts,
+clock rollback, and an exceeded age limit also require fresh sign-in. No-cache
+mode neither reads nor writes the app's F5 Keychain cache. Browser profiles can
+still retain Microsoft SSO cookies; fresh VPN authentication need not ask for
+another password/MFA prompt if that SSO session remains valid.
+
+**Observed session reuse** shows recent results and the longest accepted age.
+History contains only timestamps, ages, outcomes and random local association
+IDs, never cookies, passwords, account names, server responses or URLs. It is
+limited to 100 observations, with a 30-day retention window applied when loaded
+or recorded. Clear observation history removes the observations while retaining
+the rejection block needed to prevent stale-cookie retries.
+
+These are observations of server acceptance, not a guaranteed lifetime or proof
+that a tunnel connected. F5 can enforce inactivity, absolute lifetime and other
+policies. Only normal reconnect attempts are measured: there is no background
+probing or keep-alive. A one-hour cutoff will not discover whether the cookie
+could have survived longer; choose a longer reuse window to observe older
+cookies deliberately. ULiège IT can confirm the configured limits.
 
 ## Install a preview
 
@@ -86,8 +125,9 @@ OS requirement and rejects runtimes exceeding macOS 13.5. A Homebrew Python may
 link to libraries requiring the builder's latest macOS; use `PYTHON=/path/to/a/compatible/python3.13`
 if this check fails. An optional build-only portable Python can be downloaded
 inside this checkout with `uv python install --install-dir build/python-runtime --no-bin 3.13`.
-The build discovers that local runtime automatically. uv is never required by the
-packaged app. Signing and DMG assembly use private temporary storage so workspace
+The build discovers that local runtime automatically. Set `BUILD_VENV=/path/to/a/fresh/venv`
+to put disposable build dependencies outside a synced workspace if its old runtime
+files stall. uv is never required by the packaged app. Signing and DMG assembly use private temporary storage so workspace
 file providers cannot inject Finder metadata into the canonical archive.
 
 ## French and English authentication

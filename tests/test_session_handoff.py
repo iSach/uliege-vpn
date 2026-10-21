@@ -21,7 +21,7 @@ class SessionHandoffTests(unittest.TestCase):
         self.assertIn("Data(base64Encoded:", SWIFT)
         self.assertIn("try SessionStore.save(fresh)", SWIFT)
     def test_store_failure_nonfatal(self):
-        self.assertIn("Connection must work even if Keychain access is denied.", SWIFT)
+        self.assertIn("catch { cached = false }", (ROOT / "Sources/SessionReuse.swift").read_text())
         self.assertIn("Session couldn't be saved for reuse", SWIFT)
     def test_python_parses(self):
         for file in (ROOT / "Scripts").glob("*.py"):

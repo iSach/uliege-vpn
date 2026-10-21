@@ -89,3 +89,26 @@ new helper protections on that installation.
 
 For security reports, contact the maintainer privately. Do not post passwords,
 seeds, codes, cookies, authentication URLs, private hostnames or raw logs.
+
+## v0.5.4 cache policy and server validation
+
+Dated cache records use a separate app-v3 Keychain service. The app never
+infers acquisition time from an old Keychain entry's creation date. Legacy,
+future-dated, rejected, account-mismatched and over-age records are not reused.
+The one-hour default is a client policy, not a server-expiry guarantee.
+
+The unprivileged validator uses the fixed gof5 profile endpoint, a private
+session with no shared cookie/credential/cache storage, system TLS checks, no
+redirects, a six-second resource timeout and a 256 KiB response bound. Only
+recognized F5 login/logout redirects or the known expiration page establish
+rejection; valid, bounded VPN-profile XML establishes acceptance. Unknown
+responses never count as expiry. XML DTD/entity declarations are rejected.
+Server bodies/headers and cookies never enter the observation schema.
+
+Confirmed rejected UUIDs are blocked independently of Keychain deletion and
+survive clearing visible observations. No-cache mode avoids reading/saving a
+cookie. Cache eligibility is checked only on a user connection request; it
+never stops a process. The reconnect coordinator has no stop operation and
+checks helper state before validation, fresh auth and fresh startup. This
+feature requires no installed helper changes. Existing helper security caveats
+and the public-release review requirements above continue to apply.

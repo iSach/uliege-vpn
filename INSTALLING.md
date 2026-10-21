@@ -1,4 +1,4 @@
-ULiège VPN v0.5.3 — UNOFFICIAL UNSIGNED PREVIEW
+ULiège VPN v0.5.4 — UNOFFICIAL UNSIGNED PREVIEW
 
 1. Drag ULiege VPN.app into Applications. Eject the disk image, then open the app.
 2. This app is not notarized. If blocked, verify the source and checksum before
@@ -26,3 +26,9 @@ hints do not prove IPv6 coverage, privacy of every connection, or reachability.
 
 This helper has not been independently audited. Live sign-in, clean installs,
 upgrades, Intel execution and managed-device policies require further testing.
+
+SAVED SIGN-IN: v0.5.4 defaults to reusing cookies only for one hour. Settings
+lets you adjust that limit, set zero to always sign in, or bypass it once with
+Sign in again without saved session. Old undated cookies are ignored. Reuse
+history shows local observations, not a guaranteed university session lifetime.
+These cache changes do not require updating an existing helper.

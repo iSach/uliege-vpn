@@ -1,4 +1,4 @@
-# Prepare the v0.5.3 GitHub preview
+# Prepare the v0.5.4 GitHub preview
 
 Local builds do not publish, install privileged support, or replace the installed
 app. `./build.sh` defaults to INSTALL_APP=0. See SECURITY.md for remaining limits.
@@ -28,7 +28,7 @@ merge it through your normal review process. Before tagging, confirm the remote
 branch points to the exact reviewed commit and both architecture jobs passed.
 
 The release workflow accepts only a tag matching CFBundleShortVersionString,
-currently **v0.5.3**. After maintainer authorization, create and push that tag on
+currently **v0.5.4**. After maintainer authorization, create and push that tag on
 the reviewed commit. The workflow builds two DMGs, verifies portable checksums,
 and creates a **draft prerelease** using RELEASE_NOTES.md. It never publishes
 that draft automatically. A manual branch dispatch builds review artifacts only.

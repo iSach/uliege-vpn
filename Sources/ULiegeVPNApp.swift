@@ -7,7 +7,9 @@ import SwiftUI
 
 private enum VPNConstants {
     static let helper = "/Library/PrivilegedHelperTools/be.uliege.vpn/helper"
-    static let sessionService = "be.uliege.vpn.f5session.app-v2"
+    // v3 stores the acquisition date and account with the cookie. Older v2
+    // entries are preserved but never reused with an unknown age.
+    static let sessionService = "be.uliege.vpn.f5session.app-v3"
     static let vpnDNS = "139.165.214.214"
     // This binary includes Python + Playwright + Keychain support. No uv or
     // Python runtime is needed on the colleague's computer.
@@ -86,13 +88,13 @@ private enum SessionStore {
     // Session persistence belongs to the native app, not to PyInstaller's
     // repeatedly re-signed Python executable. This avoids cross-app Keychain
     // access prompts, and a failed write must never block a working tunnel.
-    static func save(_ value: String) throws {
+    static func save(_ value: CachedVPNSession) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: VPNConstants.sessionService,
             kSecAttrAccount as String: NSUserName()
         ]
-        let data = Data(value.utf8)
+        let data = try JSONEncoder().encode(value)
         var status = SecItemUpdate(query as CFDictionary,
                                    [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
@@ -105,7 +107,7 @@ private enum SessionStore {
         }
     }
 
-    static func current() throws -> String? {
+    static func current() throws -> CachedVPNSession? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: VPNConstants.sessionService,
@@ -117,10 +119,22 @@ private enum SessionStore {
         let code = SecItemCopyMatching(query as CFDictionary, &found)
         if code == errSecItemNotFound { return nil }
         guard code == errSecSuccess, let data = found as? Data,
-              let value = String(data: data, encoding: .utf8), !value.isEmpty else {
+              let value = CachedVPNSession.decode(data) else {
             throw VPNError.message("Cannot read the saved F5 session from Keychain (\(code)).")
         }
         return value
+    }
+
+    static func removeIfMatching(_ identifier: UUID) {
+        guard let current = try? current(), current.identifier == identifier else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: VPNConstants.sessionService,
+            kSecAttrAccount as String: NSUserName()
+        ]
+        _ = SecItemDelete(query as CFDictionary)
+        // A denied delete cannot resurrect the cookie: the nonsecret history
+        // independently blocks rejected UUIDs, even after clearing observations.
     }
 }
 
@@ -200,6 +214,8 @@ final class VPNModel: ObservableObject {
     @AppStorage("requireTouchID") var requireTouchID = false
     @AppStorage("showBrowser") var showBrowser = false
     @AppStorage("preferInteractiveLogin") var preferInteractiveLogin = true
+    @AppStorage("sessionReuseMinutes") var sessionReuseMinutes = SessionReusePolicy.defaultMinutes
+    @Published private(set) var sessionReuseHistory = SessionReuseHistory()
 
     private var polling: Timer?
     @Published private var busy = false
@@ -208,6 +224,8 @@ final class VPNModel: ObservableObject {
     private var operationGeneration = 0
 
     init() {
+        sessionReuseHistory = SessionReuseHistory.load(UserDefaults.standard.data(forKey: SessionReuseHistory.preferenceKey))
+        sessionReuseMinutes = max(0, min(sessionReuseMinutes, SessionReusePolicy.maximumMinutes))
         polling = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
@@ -297,7 +315,23 @@ final class VPNModel: ObservableObject {
         }
     }
 
-    func connect() {
+    func clearSessionObservations() {
+        sessionReuseHistory.clearObservations()
+        persistSessionHistory()
+    }
+
+    private func record(_ observation: SessionReuseObservation) {
+        sessionReuseHistory.record(observation)
+        persistSessionHistory()
+    }
+
+    private func persistSessionHistory() {
+        if let data = try? JSONEncoder().encode(sessionReuseHistory) {
+            UserDefaults.standard.set(data, forKey: SessionReuseHistory.preferenceKey)
+        }
+    }
+
+    func connect(forceFresh: Bool = false) {
         guard !busy, !canDisconnect else { return }
         guard helperInstalled else {
             state = .error("Run the installer once to enable the VPN helper.")
@@ -320,9 +354,12 @@ final class VPNModel: ObservableObject {
                 let email = universityEmail.trimmingCharacters(in: .whitespacesAndNewlines)
                 let user = universityUsername.trimmingCharacters(in: .whitespacesAndNewlines)
                 let headed = showBrowser
+                let maximumAge = TimeInterval(max(0, min(sessionReuseMinutes, SessionReusePolicy.maximumMinutes)) * 60)
+                let rejected = Set(sessionReuseHistory.rejectedIdentifiers)
                 let outcome = try await performConnect(
                     email: email, username: user,
-                    headed: headed, preferInteractive: preferInteractiveLogin)
+                    headed: headed, preferInteractive: preferInteractiveLogin,
+                    maximumAge: maximumAge, forceFresh: forceFresh, rejected: rejected)
                 sessionCacheWarning = !outcome.cached
                 apply(outcome.health)
             } catch {
@@ -371,40 +408,31 @@ final class VPNModel: ObservableObject {
         guard authorized else { throw VPNError.message("Touch ID cancelled.") }
     }
 
-    private struct ConnectionOutcome {
-        let health: TunnelHealth
-        let cached: Bool
-    }
-
     private func performConnect(email: String, username: String,
-                                headed: Bool, preferInteractive: Bool) async throws -> ConnectionOutcome {
-        try await Task.detached(priority: .userInitiated) { [self] () throws -> ConnectionOutcome in
-            let existing = ConnectionProbe.sample()
-            // Never authenticate again or replace an existing/unknown session.
-            if existing.canDisconnect { return ConnectionOutcome(health: existing, cached: true) }
-
-            // Keychain read errors should not prevent a fresh sign-in.
-            if let saved = try? SessionStore.current() {
-                await MainActor.run { self.detail = "Trying saved F5 session…" }
-                try? Self.startHelper(session: saved)
-                let health = Self.waitForConnection(seconds: 8)
-                if health.canDisconnect { return ConnectionOutcome(health: health, cached: true) }
-                // Retry authentication only after the helper explicitly reports STOPPED.
+                                headed: Bool, preferInteractive: Bool, maximumAge: TimeInterval,
+                                forceFresh: Bool, rejected: Set<UUID>) async throws -> SessionConnectionOutcome {
+        try await Task.detached(priority: .userInitiated) { [self] () throws -> SessionConnectionOutcome in
+            let operations = SessionConnectionOperations(
+                health: ConnectionProbe.sample,
+                load: { try? SessionStore.current() },
+                save: { fresh in try SessionStore.save(fresh) },
+                invalidate: SessionStore.removeIfMatching,
+                validate: { await SavedSessionValidator.validate($0) },
+                start: Self.startHelper,
+                wait: { Self.waitForConnection(seconds: 8) },
+                authenticate: {
+                    try Self.authenticate(email: email, username: username,
+                                          headed: headed, preferInteractive: preferInteractive)
+                },
+                observe: { observation in await MainActor.run { self.record(observation) } },
+                progress: { message in await MainActor.run { self.detail = message } }
+            )
+            do {
+                return try await SessionConnector.connect(account: email, maximumAge: maximumAge,
+                    forceFresh: forceFresh, rejectedIdentifiers: rejected, operations: operations)
+            } catch SessionConnectionError.stoppedAfterFreshLogin {
+                throw VPNError.message(Self.tunnelFailureDiagnosis())
             }
-
-            await MainActor.run {
-                self.detail = preferInteractive ? "Waiting for browser sign-in…" : "Signing in with Microsoft…"
-            }
-            let fresh = try Self.authenticate(email: email, username: username,
-                                              headed: headed, preferInteractive: preferInteractive)
-            await MainActor.run { self.detail = "Starting tunnel and observing routing…" }
-            try Self.startHelper(session: fresh)
-            let health = Self.waitForConnection(seconds: 8)
-            guard health.canDisconnect else { throw VPNError.message(Self.tunnelFailureDiagnosis()) }
-            // Connection must work even if Keychain access is denied.
-            var cached = true
-            do { try SessionStore.save(fresh) } catch { cached = false }
-            return ConnectionOutcome(health: health, cached: cached)
         }.value
     }
 
@@ -661,6 +689,7 @@ private struct MenuContent: View {
                             get: { model.requireTouchID },
                             set: { model.setTouchIDRequired($0) }
                         ))
+                        SessionReuseSettings(model: model)
                         Toggle("Use browser sign-in (Authenticator or other MFA)", isOn: $model.preferInteractiveLogin)
                         if !model.automaticLoginAvailable && !model.preferInteractiveLogin {
                             Text("No local TOTP/password setup found. Browser sign-in will open automatically when required.")
@@ -703,5 +732,48 @@ private struct MenuContent: View {
         let seconds = max(0, Int(now.timeIntervalSince(date)))
         let hours = seconds / 3600
         return String(format: "%02d:%02d:%02d", hours, (seconds % 3600) / 60, seconds % 60)
+    }
+}
+
+private struct SessionReuseSettings: View {
+    @ObservedObject var model: VPNModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Stepper(value: $model.sessionReuseMinutes, in: 0...SessionReusePolicy.maximumMinutes, step: 15) {
+                Text(model.sessionReuseMinutes == 0 ? "Always use fresh sign-in" :
+                    "Reuse for up to " + SessionReusePolicy.ageDescription(TimeInterval(model.sessionReuseMinutes) * 60))
+                    .font(.caption)
+            }
+            .disabled(model.working)
+            Text("0 means always sign in. This limit applies only on reconnect and never stops an active VPN. It is not the university's expiry time.")
+                .font(.caption2).foregroundStyle(.secondary)
+            Button("Sign in again without saved session") { model.connect(forceFresh: true) }
+                .disabled(model.working || model.canDisconnect || !model.helperInstalled || !model.emailConfigured || !model.chromeInstalled)
+            DisclosureGroup("Observed session reuse") {
+                VStack(alignment: .leading, spacing: 6) {
+                    if model.sessionReuseHistory.observations.isEmpty {
+                        Text("No observations yet. Results appear after reusing a recent sign-in.")
+                    } else {
+                        let observations = model.sessionReuseHistory.observations
+                        Text("\(observations.filter { $0.result == .accepted }.count) accepted · \(observations.filter { $0.result == .rejected }.count) rejected · \(observations.filter { $0.result == .unknown }.count) unknown")
+                        if let age = model.sessionReuseHistory.longestAcceptedAge {
+                            Text("Longest accepted age: " + SessionReusePolicy.ageDescription(age))
+                        }
+                        ForEach(Array(model.sessionReuseHistory.observations.suffix(5).reversed())) { observation in
+                            Text(observation.result.title + " at " + SessionReusePolicy.ageDescription(observation.age) +
+                                 " · " + observation.date.formatted(date: .abbreviated, time: .shortened))
+                        }
+                        Button("Clear observation history") { model.clearSessionObservations() }
+                            .disabled(model.working)
+                    }
+                    Text("Only attempted reuse is observed. Unknown means the check was inconclusive. Local history contains times, ages and results, never credentials. These results do not guarantee a session lifetime.")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .padding(.top, 6)
+            }
+            .font(.caption)
+        }
     }
 }
