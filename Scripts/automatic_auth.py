@@ -431,6 +431,34 @@ class F5Completion:
         return None
 
 
+def acknowledge_vpn_maintenance(frame, allow_click=None):
+    """Continue only past the dated ULiège PHP2Shell maintenance notice."""
+    if host(frame.url) not in F5_HOSTS | {"idp.uliege.be"}:
+        return False
+    try:
+        text = re.sub(r"\s+", " ", frame.locator("body").inner_text(timeout=800))
+        if "php2shell" not in text.casefold() or not re.search(
+            r"(?:26\s+(?:October|octobre)\s+2026|26/10/2026|2026-10-26)", text, re.I
+        ):
+            return False
+        if allow_click is not None and not allow_click():
+            return False
+        label = re.compile(r"^\s*(?:Click here to continue|Cliquez ici pour continuer)\s*$", re.I)
+        for role in ("link", "button"):
+            action = frame.get_by_role(role, name=label).first
+            if action.is_visible() and action.is_enabled():
+                action.click(timeout=5000)
+                return True
+        action = frame.get_by_text(label).first
+        if action.is_visible() and action.is_enabled():
+            action.click(timeout=5000)
+            return True
+    except PlaywrightError:
+        # The next loop reads the current page after a navigation.
+        pass
+    return False
+
+
 def auth(headless, email, username=None, timeout=240):
     PROFILE.mkdir(parents=True, exist_ok=True)
     PROFILE.chmod(0o700)
@@ -480,6 +508,16 @@ def auth(headless, email, username=None, timeout=240):
                 if hosts != last_host_state:
                     print("Browser hosts:", ", ".join(hosts), flush=True)
                     last_host_state = hosts
+
+                maintenance_acknowledged = False
+                for f in fs:
+                    if acknowledge_vpn_maintenance(f, lambda: cooldown("maintenance-notice", 3)):
+                        announce("Acknowledged the university VPN maintenance notice.")
+                        maintenance_acknowledged = True
+                        break
+                if maintenance_acknowledged:
+                    time.sleep(0.8)
+                    continue
 
                 session = completion.observe(context, fs)
                 if session:

@@ -105,5 +105,31 @@ class LocalizedButtonBrowserTests(unittest.TestCase):
         self.assertFalse(self.auth.microsoft_stay_signed_in_prompt(self.page.main_frame))
 
 
+    def maintenance_page(self, body, label, hostname="idp.uliege.be"):
+        html = ("<p>"+body+"</p><a href='#' onclick='window.selected=1;return false'>"+label+"</a>")
+        self.page.route("**/*", lambda route: route.fulfill(status=200, content_type="text/html", body=html))
+        self.page.goto("https://"+hostname+"/synthetic-maintenance-fixture")
+
+    def test_english_maintenance_notice_click(self):
+        self.maintenance_page("PHP2Shell VPN update 26 October 2026", "Click here to continue")
+        self.assertTrue(self.auth.acknowledge_vpn_maintenance(self.page.main_frame))
+        self.assertEqual(self.page.evaluate("window.selected"), 1)
+
+    def test_french_maintenance_notice_click(self):
+        self.maintenance_page("PHP2Shell mise à jour le 26 octobre 2026", "Cliquez ici pour continuer", "vpn-2fa.uliege.be")
+        self.assertTrue(self.auth.acknowledge_vpn_maintenance(self.page.main_frame))
+        self.assertEqual(self.page.evaluate("window.selected"), 1)
+
+    def test_older_login_page_without_notice_is_untouched(self):
+        self.maintenance_page("Sign in with Microsoft", "Click here to continue")
+        self.assertFalse(self.auth.acknowledge_vpn_maintenance(self.page.main_frame))
+        self.assertIsNone(self.page.evaluate("window.selected"))
+
+    def test_maintenance_notice_on_lookalike_host_is_untouched(self):
+        self.maintenance_page("PHP2Shell VPN update 26 October 2026", "Click here to continue", "idp.uliege.be.evil.test")
+        self.assertFalse(self.auth.acknowledge_vpn_maintenance(self.page.main_frame))
+        self.assertIsNone(self.page.evaluate("window.selected"))
+
+
 if __name__ == "__main__":
     unittest.main()

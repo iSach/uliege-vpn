@@ -25,6 +25,13 @@ unverified running process is preserved. Checks use bounded commands and a
 monotonic startup deadline. Stale polling results cannot overwrite a newer
 Connect/Disconnect operation.
 
+## VPN maintenance notice
+
+Automatic sign-in handles ULiège's dated PHP2Shell maintenance notice from
+26 October 2026 in English or French. It acknowledges only that specific notice
+on the university's HTTPS VPN/identity hosts. Older sign-in pages continue through
+the existing flow; password, MFA and portal-completion checks are unchanged.
+
 ## Saved sign-in reuse (v0.5.4)
 
 Saved F5 cookies are reused for at most **one hour by default**, measured from
